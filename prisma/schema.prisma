@@ -1,0 +1,234 @@
+// ---------------------------------------------------------------------------
+// Creator Database — Prisma schema
+//
+// One master `Creator` record per real-world creator. Outreach syncs and
+// Claude email extractions both funnel into that record instead of creating
+// duplicates (see CreatorsService.upsertFromSource for the merge logic).
+//
+// Supporting tables:
+//   Campaign      one row per Instantly campaign
+//   EmailHistory  every fetched email message + its Claude extraction
+//   ActivityLog   append-only audit of every field change
+//   FailedJob     dead-letter queue for failed sync / extraction jobs
+//   SyncRun       observability record for each background/manual sync run
+// ---------------------------------------------------------------------------
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Negotiation lifecycle for a creator deal.
+enum NegotiationStatus {
+  PENDING
+  NEGOTIATING
+  ACCEPTED
+  REJECTED
+  COMPLETED
+}
+
+/// Where a change originated. Recorded on every ActivityLog entry.
+enum ActivitySource {
+  INSTANTLY_DASHBOARD
+  CLAUDE_EXTRACTION
+  EMAIL_SYNC
+  MANUAL_API
+  SYSTEM
+}
+
+/// Kind of background job — used by SyncRun and FailedJob.
+enum JobType {
+  OUTREACH_SYNC
+  EMAIL_SYNC
+  CLAUDE_EXTRACTION
+}
+
+/// Outcome of a sync run.
+enum SyncStatus {
+  RUNNING
+  SUCCESS
+  FAILED
+}
+
+model Creator {
+  id String @id @default(uuid())
+
+  // --- Identity (dedup keys, in priority order: email > instagram > name) ---
+  creatorName          String?
+  instagramUsername    String? @unique
+  instagramProfileLink String?
+  email                String? @unique
+  phoneNumber          String?
+
+  // --- Campaign info -------------------------------------------------------
+  campaignName    String?
+  campaignId      String?
+  campaign        Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  outreachStage   String?
+  assignedManager String?
+
+  // --- Performance ---------------------------------------------------------
+  averageViews   Int?
+  averageLikes   Int?
+  engagementRate Float?
+  followers      Int?
+
+  // --- Commercial ----------------------------------------------------------
+  cpm          Float?
+  acceptedRate Float?
+  quotedRate   Float?
+  currency     String? @default("USD")
+
+  // --- Campaign deliverables ----------------------------------------------
+  numberOfVideos          Int?
+  numberOfStories         Int?
+  numberOfReels           Int?
+  guaranteedViews         Int?
+  deadline                DateTime?
+  deliverablesDescription String?
+
+  // --- Communication -------------------------------------------------------
+  latestEmailDate DateTime?
+  lastReplyDate   DateTime?
+  threadId        String?
+  emailStatus     String?
+
+  // --- Deliverability ------------------------------------------------------
+  inboxRate Float?
+  spamRate  Float?
+  bounced   Boolean @default(false)
+  opened    Boolean @default(false)
+  replied   Boolean @default(false)
+
+  // --- Negotiation status --------------------------------------------------
+  status NegotiationStatus @default(PENDING)
+
+  // --- Metadata ------------------------------------------------------------
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  emailHistory EmailHistory[]
+  activityLogs ActivityLog[]
+
+  @@index([creatorName])
+  @@index([campaignId])
+  @@index([assignedManager])
+  @@index([status])
+  @@index([deadline])
+  @@index([updatedAt])
+  @@map("creators")
+}
+
+model Campaign {
+  id String @id @default(uuid())
+
+  /// Human-readable campaign name (unique so outreach sync can upsert by name).
+  name String @unique
+  /// Upstream Instantly campaign UUID, when known.
+  instantlyCampaignId String? @unique
+  brandName           String?
+  /// Full upstream payload stashed for reference / future fields.
+  data Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  syncedAt  DateTime @default(now())
+
+  creators Creator[]
+
+  @@index([instantlyCampaignId])
+  @@map("campaigns")
+}
+
+model EmailHistory {
+  id String @id @default(uuid())
+
+  threadId  String
+  messageId String @unique
+  sender    String?
+  recipient String?
+  subject   String?
+  timestamp DateTime?
+
+  /// Raw email body (text or html) as fetched from Instantly.
+  rawEmail String? @db.Text
+  /// Hash of the message content — lets us detect edited threads cheaply.
+  contentHash String?
+
+  /// Structured JSON returned by Claude for the thread this message belongs to.
+  claudeJson  Json?
+  /// When Claude last processed the thread this message belongs to (null = pending).
+  processedAt DateTime?
+
+  creatorId String?
+  creator   Creator? @relation(fields: [creatorId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([threadId])
+  @@index([creatorId])
+  @@index([processedAt])
+  @@map("email_history")
+}
+
+model ActivityLog {
+  id String @id @default(uuid())
+
+  creatorId String?
+  creator   Creator? @relation(fields: [creatorId], references: [id], onDelete: SetNull)
+
+  changedField String
+  oldValue     String?
+  newValue     String?
+  source       ActivitySource
+
+  createdAt DateTime @default(now())
+
+  @@index([creatorId])
+  @@index([source])
+  @@index([createdAt])
+  @@map("activity_logs")
+}
+
+model FailedJob {
+  id String @id @default(uuid())
+
+  jobType JobType
+  /// Arbitrary payload needed to retry the job (e.g. { threadId } or a lead).
+  payload Json
+  error   String  @db.Text
+  attempts Int    @default(1)
+  resolved Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([jobType])
+  @@index([resolved])
+  @@map("failed_jobs")
+}
+
+model SyncRun {
+  id String @id @default(uuid())
+
+  jobType        JobType
+  status         SyncStatus @default(RUNNING)
+  itemsProcessed Int        @default(0)
+  itemsCreated   Int        @default(0)
+  itemsUpdated   Int        @default(0)
+  itemsFailed    Int        @default(0)
+  error          String?    @db.Text
+
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  @@index([jobType])
+  @@index([status])
+  @@index([startedAt])
+  @@map("sync_runs")
+}
