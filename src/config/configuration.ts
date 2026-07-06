@@ -14,6 +14,9 @@ export interface AppConfig {
   database: {
     url: string;
   };
+  security: {
+    internalApiKey: string;
+  };
   instantly: {
     apiKey: string;
     apiBase: string;
@@ -64,6 +67,10 @@ export default (): AppConfig => ({
   },
   database: {
     url: process.env.DATABASE_URL ?? '',
+  },
+  security: {
+    // Shared secret required on mutating requests via the x-api-key header.
+    internalApiKey: process.env.INTERNAL_API_KEY ?? '',
   },
   instantly: {
     apiKey: process.env.INSTANTLY_API_KEY ?? '',

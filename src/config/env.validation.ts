@@ -23,6 +23,8 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
   if (!isTest) {
     required('INSTANTLY_API_KEY');
     required('CLAUDE_API_KEY');
+    // Shared secret the Outreach backend sends as x-api-key on contract writes.
+    required('INTERNAL_API_KEY');
   }
 
   const port = config.PORT;

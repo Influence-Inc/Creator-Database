@@ -38,6 +38,14 @@ enum ActivitySource {
   EMAIL_SYNC
   MANUAL_API
   SYSTEM
+  CONTRACT_SIGNED
+}
+
+/// Lifecycle of a signed creator contract.
+enum ContractStatus {
+  PENDING
+  SIGNED
+  COMPLETED
 }
 
 /// Kind of background job — used by SyncRun and FailedJob.
@@ -113,6 +121,7 @@ model Creator {
 
   emailHistory EmailHistory[]
   activityLogs ActivityLog[]
+  contracts    Contract[]
 
   @@index([creatorName])
   @@index([campaignId])
@@ -142,6 +151,53 @@ model Campaign {
 
   @@index([instantlyCampaignId])
   @@map("campaigns")
+}
+
+/// One row per signed creator contract, synced from the Outreach backend after a
+/// creator signs. Preserves per-contract terms (a creator's single-valued
+/// commercial fields get overwritten each campaign; this is the durable history).
+model Contract {
+  id String @id @default(uuid())
+
+  /// The Outreach backend's contract token — stable, unique, dedups re-syncs.
+  contractRef String  @unique
+  contractUrl String?
+
+  creatorId String
+  creator   Creator @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+
+  // --- Campaign + deliverables --------------------------------------------
+  brandName            String?
+  campaignName         String?
+  platform             String?
+  deliverables         String?
+  numberOfDeliverables Int?
+  timeline             String?
+  deadline             DateTime?
+  usageRights          String?
+  exclusivity          String?
+  guaranteedViews      Int?
+
+  // --- Commercial ----------------------------------------------------------
+  compensation Float?
+  currency     String? @default("USD")
+  paymentTerms String?
+
+  // --- Extra terms ---------------------------------------------------------
+  specialNotes    String?
+  additionalTerms Json?
+
+  // --- Signature -----------------------------------------------------------
+  status     ContractStatus @default(PENDING)
+  signerName String?
+  signedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([creatorId])
+  @@index([status])
+  @@map("contracts")
 }
 
 model EmailHistory {
