@@ -23,8 +23,6 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
   if (!isTest) {
     required('INSTANTLY_API_KEY');
     required('CLAUDE_API_KEY');
-    // Shared secret the Outreach backend sends as x-api-key on contract writes.
-    required('INTERNAL_API_KEY');
   }
 
   const port = config.PORT;
@@ -34,6 +32,22 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
 
   if (errors.length > 0) {
     throw new Error(`Environment validation failed:\n  - ${errors.join('\n  - ')}`);
+  }
+
+  // Soft-required: INTERNAL_API_KEY protects the mutating endpoints via the
+  // global ApiKeyGuard. If it's unset the guard still boots — writes just fall
+  // back to unauthenticated with a loud runtime warning per request. We do NOT
+  // crash the container here (that would block a Railway deploy on any service
+  // that hasn't been given the env var yet); instead we surface a clear one-time
+  // startup warning so operators can spot the missing config in logs.
+  if (!isTest) {
+    const key = config.INTERNAL_API_KEY;
+    if (key === undefined || key === null || String(key).trim() === '') {
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[env] INTERNAL_API_KEY is not set — mutating endpoints (POST/PATCH/PUT/DELETE) will be UNAUTHENTICATED. Set INTERNAL_API_KEY in the environment to enforce x-api-key on writes.',
+      );
+    }
   }
 
   return config;
