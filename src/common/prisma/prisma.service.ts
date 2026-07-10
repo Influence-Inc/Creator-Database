@@ -20,9 +20,19 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     });
   }
 
-  async onModuleInit(): Promise<void> {
-    await this.$connect();
-    this.logger.log('Prisma connected to the database');
+  onModuleInit(): void {
+    // Connect in the background rather than awaiting here: awaiting would block
+    // NestFactory.create() (and therefore app.listen()) until the DB handshake
+    // completes, so a slow connection would keep the HTTP server from binding
+    // and make a healthcheck-gated deploy fail even though the app is fine.
+    // Prisma also connects lazily on first query, so this is purely a warm-up.
+    this.$connect()
+      .then(() => this.logger.log('Prisma connected to the database'))
+      .catch((err) =>
+        this.logger.error('Prisma failed to connect on startup (will retry lazily)', {
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
   }
 
   async onModuleDestroy(): Promise<void> {
