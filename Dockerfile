@@ -42,6 +42,7 @@ USER node
 
 EXPOSE 3000
 
-# Apply pending migrations, then boot the server. `migrate deploy` is the
-# production-safe, non-interactive migration command.
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/main.js"]
+# Boot the server directly. The app binds the HTTP port first (so the platform
+# healthcheck is never blocked) and then runs `prisma migrate deploy` in the
+# background from the CLI shipped in node_modules. See src/main.ts.
+CMD ["node", "dist/main.js"]
