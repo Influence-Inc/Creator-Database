@@ -50,9 +50,14 @@ async function bootstrap(): Promise<void> {
   const port = config.get<number>('server.port') ?? 3000;
 
   // Bind to all interfaces so the platform proxy/healthcheck can reach us.
-  // The explicit stdout line makes the bound port unmissable in deploy logs.
-  await app.listen(port, '0.0.0.0');
-  process.stdout.write(`[startup] HTTP server listening on 0.0.0.0:${port}\n`);
+  // Defaults to 0.0.0.0 (IPv4, current behavior). Railway's private network is
+  // IPv6-only, so set HOST=:: in the unified project to also receive
+  // service-to-service calls over *.railway.internal (e.g. outreach -> this
+  // service). The explicit stdout line makes the bound host/port unmissable in
+  // deploy logs.
+  const host = process.env.HOST ?? '0.0.0.0';
+  await app.listen(port, host);
+  process.stdout.write(`[startup] HTTP server listening on ${host}:${port}\n`);
 
   const logger = app.get(StructuredLogger);
   logger.event('info', 'server.started', {
