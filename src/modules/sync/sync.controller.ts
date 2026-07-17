@@ -2,6 +2,7 @@ import { Controller, HttpCode, HttpStatus, Post } from '@nestjs/common';
 import { ClaudeExtractionService } from './claude-extraction.service';
 import { EmailSyncService } from './email-sync.service';
 import { OutreachSyncService } from './outreach-sync.service';
+import { StatsSyncService } from './stats-sync.service';
 import { SyncResult } from './sync-result.interface';
 
 /**
@@ -12,6 +13,7 @@ import { SyncResult } from './sync-result.interface';
  *   POST /sync/outreach   run Job 1 now
  *   POST /sync/emails     run Job 2 now
  *   POST /sync/claude     run Job 3 now
+ *   POST /sync/stats      run Job 4 now
  */
 @Controller('sync')
 export class SyncController {
@@ -19,6 +21,7 @@ export class SyncController {
     private readonly outreachSync: OutreachSyncService,
     private readonly emailSync: EmailSyncService,
     private readonly claudeExtraction: ClaudeExtractionService,
+    private readonly statsSync: StatsSyncService,
   ) {}
 
   @Post('outreach')
@@ -37,5 +40,11 @@ export class SyncController {
   @HttpCode(HttpStatus.OK)
   runClaude(): Promise<SyncResult> {
     return this.claudeExtraction.run();
+  }
+
+  @Post('stats')
+  @HttpCode(HttpStatus.OK)
+  runStats(): Promise<SyncResult> {
+    return this.statsSync.run();
   }
 }

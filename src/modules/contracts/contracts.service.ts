@@ -37,11 +37,14 @@ export class ContractsService {
       );
     }
 
-    // 1. Upsert the master creator with the final agreed terms.
+    // 1. Upsert the master creator with the final agreed terms. The signer's
+    //    email/phone from the signing form fill the master record too (email is
+    //    only used as an identity fill when the creator has none yet).
     const creatorInput: CreatorUpsertInput = {
       creatorName: dto.creatorName,
-      email: dto.email,
+      email: dto.email ?? dto.signerEmail,
       instagramUsername: dto.instagramUsername,
+      phoneNumber: dto.signerPhone,
       campaignName: dto.campaignName,
       acceptedRate: dto.compensation,
       currency: dto.currency,
@@ -85,6 +88,21 @@ export class ContractsService {
       status: dto.status ?? ContractStatus.COMPLETED,
       signerName: dto.signerName,
       signedAt: this.toDate(dto.signedAt),
+      // Signer details captured on the signing form.
+      signerEmail: dto.signerEmail,
+      signerPhone: dto.signerPhone,
+      signerGender: dto.signerGender,
+      signerSignedDate: this.toDate(dto.signerSignedDate),
+      signatureImage: dto.signatureImage,
+      addressLine1: dto.address?.line1,
+      addressLine2: dto.address?.line2,
+      addressCity: dto.address?.city,
+      addressState: dto.address?.state,
+      addressPostalCode: dto.address?.zip,
+      addressCountry: dto.address?.country,
+      paymentDetails: dto.paymentDetails
+        ? (dto.paymentDetails as unknown as Prisma.InputJsonValue)
+        : undefined,
     };
 
     const contract = await this.prisma.contract.upsert({

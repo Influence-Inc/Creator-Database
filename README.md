@@ -1,11 +1,17 @@
 # Creator Database Backend
 
 A production-ready backend service that builds and maintains a **centralized
-Creator Database** by collecting creator information from two sources:
+Creator Database** by collecting creator information from four sources:
 
 1. **Instantly outreach dashboard** — creator/lead rows synced from campaigns.
 2. **Instantly email threads** — parsed by the **Claude API** into structured
    deal data (rates, deliverables, deadlines, negotiation status).
+3. **Outreach signed contracts** — pushed by the Outreach backend when a creator
+   signs, including the full signing submission: address, phone, gender, drawn
+   signature, bank/payout details, deliverables, usage rights, and platform.
+4. **influence-stats / ReelMetrics** — per-campaign performance polled from
+   `GET /api/bot/campaigns`: views in each post and combined, likes/comments,
+   risk level, CPM (booked + realized), budget, and deliverables completion.
 
 There is **no frontend** — this is a headless REST + background-worker service,
 designed to be deployed on **Railway** with a PostgreSQL database.
@@ -72,8 +78,10 @@ Prisma schema: [`prisma/schema.prisma`](./prisma/schema.prisma).
 
 | Table            | Purpose                                                              |
 | ---------------- | ------------------------------------------------------------------- |
-| `creators`       | The master record. Identity, campaign, performance, commercial, deliverables, communication, deliverability, negotiation status. `email` and `instagramUsername` are unique. |
+| `creators`       | The master record. Identity, campaign, performance, commercial, deliverables, communication, deliverability, risk level, negotiation status. `email` and `instagramUsername` are unique. |
 | `campaigns`      | One row per Instantly campaign (synced during Job 1).               |
+| `contracts`      | One row per signed contract (pushed by the Outreach backend). Terms + the full signer submission: address, phone, gender, signature image, and bank/payout details. |
+| `creator_stats`  | One row per creator per influence-stats campaign (synced during Job 4). Combined + per-post views/likes/comments, risk, CPM, budget, deliverables. |
 | `email_history`  | Every fetched email message + its Claude extraction. `contentHash` detects edited threads; `processedAt = null` marks a thread as needing extraction. |
 | `activity_logs`  | Append-only audit: `creator, changedField, oldValue, newValue, source, timestamp`. |
 | `failed_jobs`    | Dead-letter queue for jobs that fail after their retries.           |

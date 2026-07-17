@@ -5,6 +5,7 @@ import { CronJob } from 'cron';
 import { ClaudeExtractionService } from './claude-extraction.service';
 import { EmailSyncService } from './email-sync.service';
 import { OutreachSyncService } from './outreach-sync.service';
+import { StatsSyncService } from './stats-sync.service';
 
 /**
  * Registers the three background jobs as cron jobs using expressions from
@@ -29,6 +30,7 @@ export class SyncScheduler implements OnModuleInit {
     private readonly outreachSync: OutreachSyncService,
     private readonly emailSync: EmailSyncService,
     private readonly claudeExtraction: ClaudeExtractionService,
+    private readonly statsSync: StatsSyncService,
   ) {}
 
   onModuleInit(): void {
@@ -45,6 +47,9 @@ export class SyncScheduler implements OnModuleInit {
     );
     this.register('claude-extraction', this.config.get<string>('jobs.cronClaudeExtraction')!, () =>
       this.claudeExtraction.run(),
+    );
+    this.register('stats-sync', this.config.get<string>('jobs.cronStatsSync')!, () =>
+      this.statsSync.run(),
     );
   }
 

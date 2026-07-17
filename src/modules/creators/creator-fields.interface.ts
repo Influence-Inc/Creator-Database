@@ -30,6 +30,7 @@ export interface CreatorUpsertInput {
   averageLikes?: number | null;
   engagementRate?: number | null;
   followers?: number | null;
+  riskLevel?: string | null;
 
   // Commercial
   cpm?: number | null;
@@ -78,6 +79,7 @@ export const MERGEABLE_FIELDS: (keyof CreatorUpsertInput)[] = [
   'averageLikes',
   'engagementRate',
   'followers',
+  'riskLevel',
   'cpm',
   'acceptedRate',
   'quotedRate',
