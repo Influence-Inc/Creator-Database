@@ -17,6 +17,12 @@ export interface AppConfig {
   security: {
     internalApiKey: string;
   };
+  auth: {
+    adminUsername: string;
+    adminPassword: string;
+    sessionSecret: string;
+    sessionTtlHours: number;
+  };
   instantly: {
     apiKey: string;
     apiBase: string;
@@ -77,6 +83,16 @@ export default (): AppConfig => ({
   security: {
     // Shared secret required on mutating requests via the x-api-key header.
     internalApiKey: process.env.INTERNAL_API_KEY ?? '',
+  },
+  auth: {
+    // Admin-console credentials. When ADMIN_PASSWORD is unset, the read API and
+    // UI stay open (dev/test); set it to enforce sign-in on the console + reads.
+    adminUsername: process.env.ADMIN_USERNAME ?? 'admin',
+    adminPassword: process.env.ADMIN_PASSWORD ?? '',
+    // Secret used to sign session cookies. Falls back to INTERNAL_API_KEY, then
+    // a per-boot random value (sessions won't survive a restart / span replicas).
+    sessionSecret: process.env.AUTH_SESSION_SECRET ?? process.env.INTERNAL_API_KEY ?? '',
+    sessionTtlHours: parseIntOr(process.env.AUTH_SESSION_TTL_HOURS, 12),
   },
   instantly: {
     apiKey: process.env.INSTANTLY_API_KEY ?? '',

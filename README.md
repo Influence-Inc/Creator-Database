@@ -13,8 +13,24 @@ Creator Database** by collecting creator information from four sources:
    `GET /api/bot/campaigns`: views in each post and combined, likes/comments,
    risk level, CPM (booked + realized), budget, and deliverables completion.
 
-There is **no frontend** — this is a headless REST + background-worker service,
+It ships with a lightweight **admin console** (a static SPA served from
+[`public/`](./public) at `/`) — an admin sign-in, a searchable/risk-filterable
+creator roster, and a per-creator profile (overview, contract & legal,
+deliverables & rights, performance, campaigns), in light and dark themes. The
+UI reads from a purpose-built `/roster` read-model that composes the master
+record with its stats snapshots and contracts; sensitive payout data (full
+account numbers, IBANs, signature images) is redacted server-side and never
+sent to the browser. Otherwise this is a REST + background-worker service,
 designed to be deployed on **Railway** with a PostgreSQL database.
+
+**Auth.** Set `ADMIN_PASSWORD` (and optionally `ADMIN_USERNAME`,
+`AUTH_SESSION_SECRET`) to require sign-in: `POST /auth/login` checks the
+credentials and issues an HMAC-signed, httpOnly session cookie, and read
+endpoints (`GET`) then require **either** that session **or** the `x-api-key`
+shared secret — so the browser console and machine consumers both work while
+the read API is no longer open. Mutations keep requiring `x-api-key`. When
+`ADMIN_PASSWORD` is unset the console and reads stay open (dev/test) with a
+startup warning. `/health` and `/auth/*` are always public.
 
 The core invariant: **one master record per creator**. New outreach and creator
 replies update that master record instead of creating duplicates.

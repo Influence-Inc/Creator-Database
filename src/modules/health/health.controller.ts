@@ -1,5 +1,6 @@
 import { Controller, Get } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Public } from '../../common/decorators/public.decorator';
 import { PrismaService } from '../../common/prisma/prisma.service';
 
 /**
@@ -16,7 +17,10 @@ import { PrismaService } from '../../common/prisma/prisma.service';
  * `GET /health/ready` is a **readiness** probe that does gate on the database,
  * for callers (or a stricter platform check) that want "is it fully ready to
  * serve traffic" rather than "is the process alive".
+ *
+ * Public — the platform healthcheck must reach it without a session or key.
  */
+@Public()
 @Controller('health')
 export class HealthController {
   constructor(
