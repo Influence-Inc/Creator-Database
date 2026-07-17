@@ -11,16 +11,13 @@
   var WORDMARK =
     '<svg viewBox="0 0 793 70" role="img" aria-label="INFLUENCE"><path d="M20.01 68.6729H1.35348e-05V1.03334H20.01V68.6729ZM126.221 69.8941L55.1993 29.4044V68.6729H42.5169V-4.03086e-05L113.538 40.3018V1.03334H126.221V69.8941ZM209.764 44.2475H168.992V68.6729H148.794V1.03334H219.816V11.9308H169.086V33.35H209.764V44.2475ZM306.528 68.6729H236.54V1.03334H256.738V57.7754H306.528V68.6729ZM389.07 34.6652V1.03334H401.847V34.6652C401.847 40.8029 400.813 46.1577 398.747 50.7296C396.742 55.3015 393.861 58.934 390.104 61.6271C386.409 64.3201 382.15 66.3243 377.327 67.6395C372.505 68.9547 367.119 69.6123 361.169 69.6123C348.706 69.6123 338.81 66.7627 331.483 61.0634C324.218 55.3642 320.585 46.6274 320.585 34.8531V1.03334H341.065V34.6652C341.065 38.8614 341.754 42.4939 343.132 45.5627C344.51 48.6315 346.357 51.0114 348.675 52.7024C351.054 54.3934 353.591 55.646 356.284 56.4602C359.04 57.2117 361.983 57.5875 365.115 57.5875C368.246 57.5875 371.158 57.2117 373.851 56.4602C376.607 55.646 379.144 54.3934 381.461 52.7024C383.841 51.0114 385.688 48.6315 387.004 45.5627C388.381 42.4939 389.07 38.8614 389.07 34.6652ZM494.814 68.6729H423.041V1.03334H494.814V11.9308H443.238V28.7468H484.386V39.6442H443.238V57.7754H494.814V68.6729ZM596.325 69.8941L525.303 29.4044V68.6729H512.621V-4.03086e-05L583.643 40.3018V1.03334H596.325V69.8941ZM702.321 52.6085V63.7878C692.989 67.796 681.778 69.8002 668.689 69.8002C657.917 69.8002 648.428 68.4536 640.224 65.7606C632.082 63.0049 625.694 58.9653 621.059 53.6418C616.425 48.3184 614.108 42.0555 614.108 34.8531C614.108 24.0809 619.087 15.6259 629.045 9.48828C639.003 3.28799 652.217 0.187845 668.689 0.187845C681.966 0.187845 693.177 2.19198 702.321 6.20025V18.5069C693.302 13.4965 682.78 10.9914 670.756 10.9914C659.545 10.9914 650.84 13.246 644.639 17.7553C638.439 22.202 635.339 27.9013 635.339 34.8531C635.339 41.8676 638.439 47.6294 644.639 52.1387C650.902 56.648 659.796 58.9027 671.319 58.9027C682.029 58.9027 692.363 56.8046 702.321 52.6085ZM792.821 68.6729H721.048V1.03334H792.821V11.9308H741.246V28.7468H782.393V39.6442H741.246V57.7754H792.821V68.6729Z"/></svg>';
 
-  // Demo gate. This is a front-door convenience, not a security boundary — the
-  // read API is open. Swap for real auth if the console is exposed publicly.
-  var ADMIN_USER = 'admin';
-  var ADMIN_PASS = 'influence2026';
-
   var state = {
-    view: sessionStorage.getItem('cdb_auth') === '1' ? 'app' : 'login',
+    // 'loading' until GET /auth/session resolves, then 'login' or 'app'.
+    view: 'loading',
     username: '',
     password: '',
     loginError: false,
+    loggingIn: false,
     search: '',
     riskFilter: 'All',
     expandedId: null,
@@ -97,8 +94,12 @@
     state.roster = null;
     state.rosterError = false;
     render();
-    fetch('/roster')
+    fetch('/roster', { credentials: 'same-origin' })
       .then(function (r) {
+        if (r.status === 401) {
+          state.view = 'login';
+          throw new Error('unauthorized');
+        }
         if (!r.ok) throw new Error('roster ' + r.status);
         return r.json();
       })
@@ -107,6 +108,7 @@
         render();
       })
       .catch(function () {
+        if (state.view === 'login') return render();
         state.rosterError = true;
         state.roster = { creators: [], total: 0 };
         render();
@@ -116,8 +118,13 @@
     state.profile = null;
     state.profileLoading = true;
     render();
-    fetch('/roster/' + encodeURIComponent(id))
+    fetch('/roster/' + encodeURIComponent(id), { credentials: 'same-origin' })
       .then(function (r) {
+        if (r.status === 401) {
+          state.view = 'login';
+          state.selectedId = null;
+          throw new Error('unauthorized');
+        }
         if (!r.ok) throw new Error('profile ' + r.status);
         return r.json();
       })
@@ -168,8 +175,11 @@
       (state.loginError
         ? '<div class="login-err">Invalid username or password.</div>'
         : '') +
-      '<button class="btn-primary" type="submit">Sign in</button>' +
-      '<div class="login-hint">Demo credentials — admin / influence2026</div>' +
+      '<button class="btn-primary" type="submit"' +
+      (state.loggingIn ? ' disabled' : '') +
+      '>' +
+      (state.loggingIn ? 'Signing in…' : 'Sign in') +
+      '</button>' +
       '</form>' +
       '<div class="login-foot">Internal admin console · v2.4</div>' +
       '</div>'
@@ -643,7 +653,9 @@
 
   // ---- render + events ----------------------------------------------------
   function render() {
-    if (state.view === 'login') {
+    if (state.view === 'loading') {
+      root.innerHTML = '<div class="spinner"></div>';
+    } else if (state.view === 'login') {
       root.innerHTML = loginView();
     } else if (state.selectedId) {
       root.innerHTML = profileView();
@@ -658,7 +670,7 @@
     var act = el.getAttribute('data-act');
     if (act === 'theme') return toggleTheme();
     if (act === 'signout') {
-      sessionStorage.removeItem('cdb_auth');
+      fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(function () {});
       setState({ view: 'login', username: '', password: '', selectedId: null, expandedId: null });
       return;
     }
@@ -681,18 +693,38 @@
     var form = e.target.closest('[data-act="login"]');
     if (!form) return;
     e.preventDefault();
+    if (state.loggingIn) return;
     var u = document.getElementById('u').value;
     var p = document.getElementById('p').value;
-    if (u === ADMIN_USER && p === ADMIN_PASS) {
-      sessionStorage.setItem('cdb_auth', '1');
-      state.username = '';
-      state.password = '';
-      state.loginError = false;
-      state.view = 'app';
-      loadRoster();
-    } else {
-      setState({ loginError: true });
-    }
+    state.username = u;
+    state.password = p;
+    setState({ loggingIn: true, loginError: false });
+    fetch('/auth/login', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: u, password: p }),
+    })
+      .then(function (r) {
+        return r.json().then(function (j) {
+          return { ok: r.ok, j: j };
+        });
+      })
+      .then(function (res) {
+        if (res.ok && res.j && res.j.authenticated) {
+          state.username = '';
+          state.password = '';
+          state.loginError = false;
+          state.loggingIn = false;
+          state.view = 'app';
+          loadRoster();
+        } else {
+          setState({ loginError: true, loggingIn: false });
+        }
+      })
+      .catch(function () {
+        setState({ loginError: true, loggingIn: false });
+      });
   });
 
   // Keep search state without re-rendering on every keystroke (preserves focus).
@@ -731,7 +763,21 @@
   (function boot() {
     var saved = localStorage.getItem('cdb_theme');
     if (saved) document.documentElement.setAttribute('data-theme', saved);
-    if (state.view === 'app') loadRoster();
-    else render();
+    render(); // shows the loading spinner
+    fetch('/auth/session', { credentials: 'same-origin' })
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (s) {
+        if (s && s.authenticated) {
+          state.view = 'app';
+          loadRoster();
+        } else {
+          setState({ view: 'login' });
+        }
+      })
+      .catch(function () {
+        setState({ view: 'login' });
+      });
   })();
 })();

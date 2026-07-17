@@ -1,16 +1,20 @@
 import { ExecutionContext, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Reflector } from '@nestjs/core';
 import { ApiKeyGuard } from './api-key.guard';
 
 function context(method: string, headers: Record<string, unknown> = {}): ExecutionContext {
   return {
     switchToHttp: () => ({ getRequest: () => ({ method, headers }) }),
+    getHandler: () => undefined,
+    getClass: () => undefined,
   } as unknown as ExecutionContext;
 }
 
 function guardWithKey(key: string): ApiKeyGuard {
   const config = { get: () => key } as unknown as ConfigService;
-  return new ApiKeyGuard(config);
+  const reflector = { getAllAndOverride: () => false } as unknown as Reflector;
+  return new ApiKeyGuard(config, reflector);
 }
 
 describe('ApiKeyGuard', () => {

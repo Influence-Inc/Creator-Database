@@ -48,6 +48,14 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
         '[env] INTERNAL_API_KEY is not set — mutating endpoints (POST/PATCH/PUT/DELETE) will be UNAUTHENTICATED. Set INTERNAL_API_KEY in the environment to enforce x-api-key on writes.',
       );
     }
+
+    const adminPass = config.ADMIN_PASSWORD;
+    if (adminPass === undefined || adminPass === null || String(adminPass).trim() === '') {
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[env] ADMIN_PASSWORD is not set — the admin console sign-in and read endpoints (GET) will be UNAUTHENTICATED. Set ADMIN_PASSWORD (and optionally ADMIN_USERNAME / AUTH_SESSION_SECRET) to require sign-in.',
+      );
+    }
   }
 
   return config;
