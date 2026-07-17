@@ -13,8 +13,19 @@ Creator Database** by collecting creator information from four sources:
    `GET /api/bot/campaigns`: views in each post and combined, likes/comments,
    risk level, CPM (booked + realized), budget, and deliverables completion.
 
-There is **no frontend** — this is a headless REST + background-worker service,
+It ships with a lightweight **admin console** (a static SPA served from
+[`public/`](./public) at `/`) — an admin sign-in, a searchable/risk-filterable
+creator roster, and a per-creator profile (overview, contract & legal,
+deliverables & rights, performance, campaigns), in light and dark themes. The
+UI reads from a purpose-built `/roster` read-model that composes the master
+record with its stats snapshots and contracts; sensitive payout data (full
+account numbers, IBANs, signature images) is redacted server-side and never
+sent to the browser. Otherwise this is a REST + background-worker service,
 designed to be deployed on **Railway** with a PostgreSQL database.
+
+> The admin sign-in is a front-door gate (default `admin` / `influence2026`),
+> not a security boundary — the read API is open. Put it behind real auth /
+> network controls before exposing it publicly.
 
 The core invariant: **one master record per creator**. New outreach and creator
 replies update that master record instead of creating duplicates.

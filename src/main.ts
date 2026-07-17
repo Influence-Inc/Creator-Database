@@ -35,6 +35,12 @@ async function bootstrap(): Promise<void> {
   // writes aren't rejected with 413.
   app.useBodyParser('json', { limit: '6mb' });
 
+  // Serve the admin UI (static SPA) from /public. API controllers are mounted
+  // at their own paths (/creators, /roster, /contracts, …); express.static only
+  // responds when a file actually matches, so it never shadows an API route.
+  // `index.html` is served for `/`.
+  app.useStaticAssets(join(__dirname, '..', 'public'), { index: ['index.html'] });
+
   const config = app.get(ConfigService);
 
   // Global input validation: strip unknown props, coerce query strings to the

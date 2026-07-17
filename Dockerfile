@@ -31,10 +31,12 @@ RUN apt-get update -y && apt-get install -y openssl && rm -rf /var/lib/apt/lists
 WORKDIR /app
 ENV NODE_ENV=production
 
-# Copy the compiled app, pruned deps, generated Prisma client and migrations.
+# Copy the compiled app, pruned deps, generated Prisma client, migrations and
+# the static admin UI (served from ./public by src/main.ts).
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/prisma ./prisma
+COPY --from=builder /app/public ./public
 COPY --from=builder /app/package.json ./package.json
 
 # Run as the built-in non-root user shipped with the node image.
