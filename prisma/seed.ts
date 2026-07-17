@@ -1,13 +1,23 @@
 /**
  * Optional development seed. Populates a demo campaign + creator so the REST
  * API returns something before the first real sync. Safe to run repeatedly
- * (uses upserts). Run with `npm run db:seed`.
+ * (uses upserts). Run with `SEED_DEMO=true npm run db:seed`.
+ *
+ * Opt-in only: without `SEED_DEMO=true` this is a no-op, so it can never
+ * introduce placeholder creators into a real database. To remove demo data that
+ * a previous run created, call `POST /maintenance/purge-demo`.
  */
 import { PrismaClient, NegotiationStatus } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
 async function main() {
+  if (process.env.SEED_DEMO !== 'true') {
+    // eslint-disable-next-line no-console
+    console.log('SEED_DEMO is not "true" — skipping demo seed (no data written).');
+    return;
+  }
+
   const campaign = await prisma.campaign.upsert({
     where: { name: 'Summer Launch 2026' },
     update: {},

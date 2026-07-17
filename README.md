@@ -32,6 +32,13 @@ the read API is no longer open. Mutations keep requiring `x-api-key`. When
 `ADMIN_PASSWORD` is unset the console and reads stay open (dev/test) with a
 startup warning. `/health` and `/auth/*` are always public.
 
+**Maintenance.** To clear placeholder data before the first real import, call
+`POST /maintenance/purge-demo` (guarded by `x-api-key`) — it deletes only the
+demo/seed markers (the `prisma/seed.ts` creator + any `@example.com` address)
+and returns exactly what it removed; add `?dryRun=true` to preview first. A
+single creator can be removed with `DELETE /creator/:id`. The demo seed itself
+is now opt-in (`SEED_DEMO=true`), so it can never repopulate a real database.
+
 The core invariant: **one master record per creator**. New outreach and creator
 replies update that master record instead of creating duplicates.
 

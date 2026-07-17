@@ -80,6 +80,23 @@ export class CreatorsService {
     return this.activityLog.findByCreator(id, limit);
   }
 
+  /**
+   * Hard-delete a creator. Cascades to its stats + contracts (onDelete: Cascade)
+   * and nulls the creator on email_history / activity_logs (onDelete: SetNull).
+   */
+  async remove(id: string): Promise<{ deleted: true; id: string }> {
+    try {
+      await this.prisma.creator.delete({ where: { id } });
+      this.logger.log(`Deleted creator ${id}`);
+      return { deleted: true, id };
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025') {
+        throw new NotFoundException(`Creator ${id} not found`);
+      }
+      throw err;
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Manual write API (source = MANUAL_API)
   // -------------------------------------------------------------------------

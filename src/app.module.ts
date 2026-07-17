@@ -16,6 +16,7 @@ import { CreatorsModule } from './modules/creators/creators.module';
 import { CreatorStatsModule } from './modules/creator-stats/creator-stats.module';
 import { EmailHistoryModule } from './modules/email-history/email-history.module';
 import { HealthModule } from './modules/health/health.module';
+import { MaintenanceModule } from './modules/maintenance/maintenance.module';
 import { RosterModule } from './modules/roster/roster.module';
 import { StatisticsModule } from './modules/statistics/statistics.module';
 import { SyncModule } from './modules/sync/sync.module';
@@ -47,6 +48,7 @@ import { SyncModule } from './modules/sync/sync.module';
     EmailHistoryModule,
     SyncModule,
     RosterModule,
+    MaintenanceModule,
     HealthModule,
   ],
   providers: [

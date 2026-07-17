@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -52,5 +53,11 @@ export class CreatorsController {
   @Get('creator/:id/activity')
   activity(@Param('id') id: string) {
     return this.creatorsService.getActivity(id);
+  }
+
+  /** Delete a single creator (cascades to its stats + contracts). */
+  @Delete('creator/:id')
+  remove(@Param('id') id: string) {
+    return this.creatorsService.remove(id);
   }
 }
