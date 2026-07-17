@@ -24,6 +24,11 @@ export interface AppConfig {
     campaignIds: string[];
     eaccount: string | null;
   };
+  stats: {
+    apiUrl: string | null;
+    botToken: string;
+    timeoutMs: number;
+  };
   claude: {
     apiKey: string;
     model: string;
@@ -35,6 +40,7 @@ export interface AppConfig {
     cronOutreachSync: string;
     cronEmailSync: string;
     cronClaudeExtraction: string;
+    cronStatsSync: string;
     upcomingDeadlineDays: number;
   };
 }
@@ -82,6 +88,14 @@ export default (): AppConfig => ({
     campaignIds: parseList(process.env.INSTANTLY_CAMPAIGN_IDS),
     eaccount: process.env.INSTANTLY_EACCOUNT || null,
   },
+  stats: {
+    // Base URL of the influence-stats (ReelMetrics) service. When unset, the
+    // stats sync job is skipped entirely (nothing to poll).
+    apiUrl: (process.env.STATS_API_URL || '').replace(/\/$/, '') || null,
+    // Shared secret sent as `x-bot-token`; must equal influence-stats' BOT_TOKEN.
+    botToken: process.env.STATS_BOT_TOKEN ?? '',
+    timeoutMs: parseIntOr(process.env.STATS_TIMEOUT_MS, 20000),
+  },
   claude: {
     apiKey: process.env.CLAUDE_API_KEY ?? '',
     model: process.env.CLAUDE_MODEL ?? 'claude-opus-4-8',
@@ -93,6 +107,7 @@ export default (): AppConfig => ({
     cronOutreachSync: process.env.CRON_OUTREACH_SYNC ?? '*/30 * * * *',
     cronEmailSync: process.env.CRON_EMAIL_SYNC ?? '*/10 * * * *',
     cronClaudeExtraction: process.env.CRON_CLAUDE_EXTRACTION ?? '*/10 * * * *',
+    cronStatsSync: process.env.CRON_STATS_SYNC ?? '*/30 * * * *',
     upcomingDeadlineDays: parseIntOr(process.env.UPCOMING_DEADLINE_DAYS, 30),
   },
 });

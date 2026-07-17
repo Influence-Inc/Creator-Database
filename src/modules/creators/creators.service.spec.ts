@@ -20,6 +20,7 @@ function makeCreator(overrides: Partial<Creator> = {}): Creator {
     averageLikes: null,
     engagementRate: null,
     followers: null,
+    riskLevel: null,
     cpm: null,
     acceptedRate: null,
     quotedRate: null,

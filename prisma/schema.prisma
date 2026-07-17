@@ -39,6 +39,7 @@ enum ActivitySource {
   MANUAL_API
   SYSTEM
   CONTRACT_SIGNED
+  STATS_SYNC
 }
 
 /// Lifecycle of a signed creator contract.
@@ -53,6 +54,7 @@ enum JobType {
   OUTREACH_SYNC
   EMAIL_SYNC
   CLAUDE_EXTRACTION
+  STATS_SYNC
 }
 
 /// Outcome of a sync run.
@@ -84,6 +86,8 @@ model Creator {
   averageLikes   Int?
   engagementRate Float?
   followers      Int?
+  /// Risk tier synced from ReelMetrics / influence-stats (e.g. "Low"/"Medium"/"High").
+  riskLevel      String?
 
   // --- Commercial ----------------------------------------------------------
   cpm          Float?
@@ -122,6 +126,7 @@ model Creator {
   emailHistory EmailHistory[]
   activityLogs ActivityLog[]
   contracts    Contract[]
+  stats        CreatorStats[]
 
   @@index([creatorName])
   @@index([campaignId])
@@ -187,10 +192,33 @@ model Contract {
   specialNotes    String?
   additionalTerms Json?
 
-  // --- Signature -----------------------------------------------------------
-  status     ContractStatus @default(PENDING)
-  signerName String?
-  signedAt   DateTime?
+  // --- Signature + signer details -----------------------------------------
+  status      ContractStatus @default(PENDING)
+  signerName  String?
+  signerEmail String?
+  signerPhone String?
+  signerGender String?
+  /// The date the signer entered on the form (distinct from `signedAt`, the
+  /// server timestamp the submission was recorded).
+  signerSignedDate DateTime?
+  /// Drawn-signature image as a base64 data URL (data:image/png;base64,…).
+  signatureImage String? @db.Text
+  signedAt    DateTime?
+
+  // --- Signer mailing address ---------------------------------------------
+  addressLine1      String?
+  addressLine2      String?
+  addressCity       String?
+  addressState      String?
+  addressPostalCode String?
+  addressCountry    String?
+
+  /// Payout/bank details captured on the signing form (account holder, bank
+  /// name, account number, IBAN, routing, IFSC, PAN, SWIFT, tax id). Stored as
+  /// JSON so the shape can vary by country. Sensitive — protected by the same
+  /// x-api-key guard as every other write, and only ever read back through the
+  /// authenticated contract endpoints.
+  paymentDetails Json?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -198,6 +226,63 @@ model Contract {
   @@index([creatorId])
   @@index([status])
   @@map("contracts")
+}
+
+/// Per-campaign performance snapshot synced from ReelMetrics / influence-stats
+/// (`GET /api/bot/campaigns`). One row per creator per stats campaign, so a
+/// creator who runs several campaigns keeps a durable per-campaign history of
+/// views, engagement, CPM and risk — the same pattern as Contract, which keeps
+/// per-contract commercial history. Re-syncs upsert on (creatorId, statsCampaignId).
+model CreatorStats {
+  id String @id @default(uuid())
+
+  creatorId String
+  creator   Creator @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+
+  /// The influence-stats campaign id this snapshot came from.
+  statsCampaignId String
+  campaignName    String?
+  brandName       String?
+  /// Platforms the creator posted on for this campaign, e.g. "IG, TT".
+  platforms       String?
+
+  // --- Combined performance (across all of this campaign's posts) ----------
+  totalViews    Int?
+  totalLikes    Int?
+  totalComments Int?
+  postCount     Int?
+  videosPosted  Int?
+
+  // --- Commercial + risk ---------------------------------------------------
+  riskLevel    String?
+  bookedCpm    Float?
+  realizedCpm  Float?
+  budget       Float?
+  grossPay     Float?
+  creatorAsk   Float?
+  currency     String? @default("USD")
+  paidAdRights String?
+
+  // --- Deliverables --------------------------------------------------------
+  minViews             Int?
+  minVideos            Int?
+  deliverablesComplete Boolean?
+  deadline             DateTime?
+
+  /// Per-post detail: [{ id, title, uploadDate, links, viewsByPlatform,
+  /// totalViews, likes, comments }, …]. The per-post "views in each of their
+  /// posts" alongside the combined totals above.
+  videos Json?
+
+  syncedAt  DateTime @default(now())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([creatorId, statsCampaignId])
+  @@index([creatorId])
+  @@index([statsCampaignId])
+  @@index([riskLevel])
+  @@map("creator_stats")
 }
 
 model EmailHistory {

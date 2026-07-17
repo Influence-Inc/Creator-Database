@@ -11,6 +11,7 @@ import { ActivityLogModule } from './modules/activity-log/activity-log.module';
 import { CampaignsModule } from './modules/campaigns/campaigns.module';
 import { ContractsModule } from './modules/contracts/contracts.module';
 import { CreatorsModule } from './modules/creators/creators.module';
+import { CreatorStatsModule } from './modules/creator-stats/creator-stats.module';
 import { EmailHistoryModule } from './modules/email-history/email-history.module';
 import { HealthModule } from './modules/health/health.module';
 import { StatisticsModule } from './modules/statistics/statistics.module';
@@ -35,6 +36,7 @@ import { SyncModule } from './modules/sync/sync.module';
     // Feature modules
     ActivityLogModule,
     CreatorsModule,
+    CreatorStatsModule,
     CampaignsModule,
     ContractsModule,
     StatisticsModule,

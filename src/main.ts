@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
@@ -21,13 +22,18 @@ process.on('unhandledRejection', (reason) => {
 });
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule, {
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     logger: new StructuredLogger(process.env.LOG_LEVEL ?? 'info'),
     bufferLogs: false,
   });
 
   // Route all Nest logging through the DI-managed structured logger.
   app.useLogger(app.get(StructuredLogger));
+
+  // Signed contracts carry a drawn-signature image as a base64 data URL, which
+  // can exceed Express's default 100kb JSON body limit — raise it so those
+  // writes aren't rejected with 413.
+  app.useBodyParser('json', { limit: '6mb' });
 
   const config = app.get(ConfigService);
 
