@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import { CreatorsService } from './creators.service';
 import { CreateCreatorDto } from './dto/create-creator.dto';
+import { ParticipationQueryDto } from './dto/participation-query.dto';
 import { QueryCreatorsDto } from './dto/query-creators.dto';
 import { UpdateCreatorDto } from './dto/update-creator.dto';
 
@@ -38,6 +39,19 @@ export class CreatorsController {
   @HttpCode(HttpStatus.CREATED)
   create(@Body() dto: CreateCreatorDto) {
     return this.creatorsService.createManual(dto);
+  }
+
+  /**
+   * New-vs-old segmentation for the Outreach Deal Studio. Batch lookup by
+   * Instagram handle: reports which creators have prior participation in a
+   * campaign other than the current one. Read-only despite the POST verb (a
+   * batch body is cleaner than a long query string); the x-api-key the Outreach
+   * backend already sends satisfies the write guard.
+   */
+  @Post('creators/participation')
+  @HttpCode(HttpStatus.OK)
+  checkParticipation(@Body() dto: ParticipationQueryDto) {
+    return this.creatorsService.checkParticipation(dto);
   }
 
   @Get('creator/:id')

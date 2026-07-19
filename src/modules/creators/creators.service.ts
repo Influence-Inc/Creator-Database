@@ -14,6 +14,7 @@ import { ActivityLogService } from '../activity-log/activity-log.service';
 import { CreatorUpsertInput, FILL_ONLY_FIELDS, MERGEABLE_FIELDS } from './creator-fields.interface';
 import { CreatorsRepository } from './creators.repository';
 import { CreateCreatorDto } from './dto/create-creator.dto';
+import { ParticipationQueryDto } from './dto/participation-query.dto';
 import { QueryCreatorsDto } from './dto/query-creators.dto';
 import { UpdateCreatorDto } from './dto/update-creator.dto';
 
@@ -22,6 +23,24 @@ export interface UpsertResult {
   created: boolean;
   changed: boolean;
   skipped: boolean;
+}
+
+/** One campaign a creator has been part of, with where we learned it from. */
+export interface PriorCampaign {
+  name: string;
+  brandName: string | null;
+  source: 'master' | 'contract' | 'stats';
+  status: string | null;
+}
+
+/** Segmentation verdict for a single looked-up Instagram handle. */
+export interface ParticipationResult {
+  input: string;
+  instagramUsername: string | null;
+  found: boolean;
+  hasPriorParticipation: boolean;
+  priorCampaigns: PriorCampaign[];
+  contact: { creatorName: string | null; email: string | null; phoneNumber: string | null } | null;
 }
 
 /** Compare two field values, treating Dates by timestamp. */
@@ -78,6 +97,86 @@ export class CreatorsService {
 
   getActivity(id: string, limit = 100) {
     return this.activityLog.findByCreator(id, limit);
+  }
+
+  /**
+   * New-vs-old segmentation for the Outreach Deal Studio. For each Instagram
+   * handle, report whether that creator has already participated in a campaign
+   * OTHER than the current one (`excludeCampaign`). Participation evidence is
+   * gathered from the master record's campaign plus every contract and stats
+   * snapshot (each names the campaign it belongs to). A creator with prior
+   * participation is "old" (route them through the offer portal); everyone else
+   * — unknown handles included — is "new".
+   */
+  async checkParticipation(dto: ParticipationQueryDto): Promise<{ results: ParticipationResult[] }> {
+    const normalizedByInput = new Map<string, string | null>();
+    for (const raw of dto.instagramUsernames) {
+      if (!normalizedByInput.has(raw)) normalizedByInput.set(raw, normalizeInstagram(raw));
+    }
+    const handles = [
+      ...new Set(
+        [...normalizedByInput.values()].filter((h): h is string => typeof h === 'string' && h.length > 0),
+      ),
+    ];
+
+    const rows = handles.length ? await this.repo.findManyByInstagramWithHistory(handles) : [];
+    const byHandle = new Map(rows.map((r) => [r.instagramUsername as string, r]));
+
+    const exclude = dto.excludeCampaign ? dto.excludeCampaign.trim().toLowerCase() : null;
+    const isExcluded = (name: string | null | undefined): boolean =>
+      exclude != null && !!name && name.trim().toLowerCase() === exclude;
+
+    const results = dto.instagramUsernames.map((input): ParticipationResult => {
+      const handle = normalizedByInput.get(input) ?? null;
+      const row = handle ? byHandle.get(handle) : undefined;
+      if (!row) {
+        return {
+          input,
+          instagramUsername: handle,
+          found: false,
+          hasPriorParticipation: false,
+          priorCampaigns: [],
+          contact: null,
+        };
+      }
+
+      // Collect distinct campaigns (by name), preferring the earliest source in
+      // master > contract > stats order.
+      const campaigns: PriorCampaign[] = [];
+      const seen = new Set<string>();
+      const add = (
+        name: string | null | undefined,
+        brandName: string | null | undefined,
+        source: PriorCampaign['source'],
+        status?: string | null,
+      ): void => {
+        if (!name) return;
+        const key = name.trim().toLowerCase();
+        if (!key || seen.has(key)) return;
+        seen.add(key);
+        campaigns.push({ name, brandName: brandName ?? null, source, status: status ?? null });
+      };
+      add(row.campaignName, null, 'master');
+      for (const c of row.contracts) add(c.campaignName, c.brandName, 'contract', c.status);
+      for (const s of row.stats) add(s.campaignName, s.brandName, 'stats');
+
+      const priorCampaigns = campaigns.filter((c) => !isExcluded(c.name));
+
+      return {
+        input,
+        instagramUsername: row.instagramUsername,
+        found: true,
+        hasPriorParticipation: priorCampaigns.length > 0,
+        priorCampaigns,
+        contact: {
+          creatorName: row.creatorName,
+          email: row.email,
+          phoneNumber: row.phoneNumber,
+        },
+      };
+    });
+
+    return { results };
   }
 
   /**
