@@ -27,6 +27,12 @@
     rosterError: false,
     profile: null,
     profileLoading: false,
+    // Full (unredacted) contracts for the selected creator — fetched on demand
+    // when the admin reveals the account number or opens a signed contract.
+    contractsFull: null,
+    contractsLoading: false,
+    revealPay: false,
+    modalContractId: null,
   };
 
   var root = document.getElementById('root');
@@ -130,6 +136,10 @@
   function loadProfile(id) {
     state.profile = null;
     state.profileLoading = true;
+    state.contractsFull = null;
+    state.contractsLoading = false;
+    state.revealPay = false;
+    state.modalContractId = null;
     render();
     fetch('/roster/' + encodeURIComponent(id), { credentials: 'same-origin' })
       .then(function (r) {
@@ -149,6 +159,37 @@
       .catch(function () {
         state.profileLoading = false;
         state.profile = null;
+        render();
+      });
+  }
+
+  // Fetch the full (unredacted) contracts for the selected creator, once, then
+  // run `cb`. Used by both "reveal account number" and "view signed contract".
+  function loadContractsFull(cb) {
+    if (state.contractsFull) return cb();
+    if (state.contractsLoading) return;
+    state.contractsLoading = true;
+    render();
+    fetch('/roster/' + encodeURIComponent(state.selectedId) + '/contracts', {
+      credentials: 'same-origin',
+    })
+      .then(function (r) {
+        if (r.status === 401) {
+          state.view = 'login';
+          state.selectedId = null;
+          throw new Error('unauthorized');
+        }
+        if (!r.ok) throw new Error('contracts ' + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        state.contractsFull = data && data.contracts ? data.contracts : [];
+        state.contractsLoading = false;
+        cb();
+      })
+      .catch(function () {
+        state.contractsLoading = false;
+        state.contractsFull = state.view === 'login' ? null : [];
         render();
       });
   }
@@ -374,7 +415,100 @@
         tabsBar() +
         tabContent(p);
     }
-    return '<div class="app">' + topbar() + '<div class="page profile fade">' + inner + '</div></div>';
+    return (
+      '<div class="app">' +
+      topbar() +
+      '<div class="page profile fade">' +
+      inner +
+      '</div>' +
+      contractModal() +
+      '</div>'
+    );
+  }
+
+  // Full signed-contract viewer (modal): signature image + all terms + the full
+  // (unredacted) payout details. state.modalContractId is the index into
+  // state.contractsFull, or null when closed.
+  function contractModal() {
+    if (state.modalContractId === null) return '';
+    var list = state.contractsFull || [];
+    var c = list[state.modalContractId];
+    if (!c) return '';
+    var addr = c.address || {};
+    var addrStr = [addr.line1, addr.line2, addr.city, addr.state, addr.postalCode, addr.country]
+      .filter(Boolean)
+      .join(', ');
+    var pay = c.payment || {};
+    var sig = c.signatureImage
+      ? '<img class="sig-img" src="' + esc(c.signatureImage) + '" alt="signature">'
+      : '<div class="dim" style="font-size:13px">No signature image on file.</div>';
+
+    function row(k, v) {
+      return v ? '<div class="mrow"><span class="mk">' + esc(k) + '</span><span class="mv">' + v + '</span></div>' : '';
+    }
+    var mono = function (v) {
+      return v ? '<span class="mono">' + esc(v) + '</span>' : '';
+    };
+
+    var signer =
+      row('Signed by', esc(c.signerName)) +
+      row('Email', mono(c.signerEmail)) +
+      row('Phone', mono(c.signerPhone)) +
+      row('Gender', esc(c.signerGender)) +
+      row('Address', esc(addrStr)) +
+      row('Signed date', c.signedAt ? fmtDate(c.signedAt) : c.signerSignedDate ? fmtDate(c.signerSignedDate) : '') +
+      row('Status', '<span class="badge badge-sm" style="' + statusStyle(c.status) + '">' + esc(c.status) + '</span>');
+
+    var payment =
+      row('Account holder', esc(pay.accountHolderName)) +
+      row('Bank name', esc(pay.bankName)) +
+      row('Account number', mono(pay.accountNumber)) +
+      row('IBAN', mono(pay.iban)) +
+      row('Routing number', mono(pay.routingNumber)) +
+      row('IFSC code', mono(pay.ifscCode)) +
+      row('SWIFT / BIC', mono(pay.swiftCode)) +
+      row('PAN', mono(pay.panNumber)) +
+      row('Tax ID', mono(pay.taxIdNumber));
+    if (!payment) payment = '<div class="dim" style="font-size:13px">No payout details on file.</div>';
+
+    var terms =
+      row('Brand', esc(c.brandName)) +
+      row('Campaign', esc(c.campaignName)) +
+      row('Platform', esc(c.platform)) +
+      row('Deliverables', esc(c.deliverables)) +
+      row('No. of deliverables', c.numberOfDeliverables != null ? esc(String(c.numberOfDeliverables)) : '') +
+      row('Timeline', esc(c.timeline)) +
+      row('Deadline', c.deadline ? fmtDate(c.deadline) : '') +
+      row('Usage rights', esc(c.usageRights)) +
+      row('Exclusivity', esc(c.exclusivity)) +
+      row('Guaranteed views', c.guaranteedViews != null ? fmtNum(c.guaranteedViews) : '') +
+      row('Compensation', c.compensation != null ? mono(fmtMoney(c.compensation, c.currency)) : '') +
+      row('Payment terms', esc(c.paymentTerms)) +
+      row('Special notes', esc(c.specialNotes));
+
+    var multi =
+      list.length > 1
+        ? '<span class="dim" style="font-size:12px;font-weight:500;margin-left:8px">(' + (state.modalContractId + 1) + ' of ' + list.length + ')</span>'
+        : '';
+    var link = c.contractUrl
+      ? '<a href="' + esc(c.contractUrl) + '" target="_blank" rel="noopener" class="linklike">Open original ↗</a>'
+      : '';
+
+    return (
+      '<div class="modal-overlay">' +
+      '<div class="modal">' +
+      '<div class="modal-head"><div style="font-size:16px;font-weight:700">Signed contract' +
+      multi +
+      '</div><div style="display:flex;gap:16px;align-items:center">' +
+      link +
+      '<button class="modal-x" data-act="close-modal" aria-label="Close">✕</button></div></div>' +
+      '<div class="modal-body">' +
+      '<div class="msec"><div class="msec-t">Signature</div><div class="sig-box">' + sig + '</div></div>' +
+      '<div class="msec"><div class="msec-t">Signer &amp; identity</div>' + signer + '</div>' +
+      '<div class="msec"><div class="msec-t">Payment account (full)</div>' + payment + '</div>' +
+      '<div class="msec"><div class="msec-t">Contract terms</div>' + (terms || '<div class="dim" style="font-size:13px">—</div>') + '</div>' +
+      '</div></div></div>'
+    );
   }
 
   function heroCard(p) {
@@ -515,24 +649,54 @@
           '</span>'
       ) +
       '</div></div>';
-    var payCard =
-      '<div class="card"><div class="card-title">Payment account</div><div class="detail-list">' +
-      dl('Account holder', esc(pay.accountHolder || '—')) +
-      dl(
-        'Bank account',
-        '<span class="mono">' + (pay.bankLast4 ? '•••• •••• ' + esc(pay.bankLast4) : '—') + '</span>'
-      ) +
-      dl('Payment method', esc(pay.paymentMethod || '—')) +
-      dl('Tax status', esc(pay.taxStatus || '—')) +
-      '</div></div>';
     return (
       '<div class="grid-2">' +
       contactCard +
-      payCard +
+      paymentCard(pay) +
       '<div style="grid-column:1/-1">' +
       contractHistory(p.contracts) +
       '</div></div>'
     );
+  }
+
+  // Payment account card. Masked by default; the admin can reveal the full
+  // account/IBAN (fetched on demand) for payment processing.
+  function paymentCard(pay) {
+    var full =
+      state.revealPay && state.contractsFull && state.contractsFull.length
+        ? state.contractsFull[0].payment || {}
+        : null;
+    var body;
+    if (full) {
+      var rows =
+        dl('Account holder', esc(full.accountHolderName || pay.accountHolder || '—')) +
+        (full.bankName ? dl('Bank name', esc(full.bankName)) : '') +
+        (full.accountNumber ? dl('Account number', '<span class="mono">' + esc(full.accountNumber) + '</span>') : '') +
+        (full.iban ? dl('IBAN', '<span class="mono">' + esc(full.iban) + '</span>') : '') +
+        (full.routingNumber ? dl('Routing number', '<span class="mono">' + esc(full.routingNumber) + '</span>') : '') +
+        (full.ifscCode ? dl('IFSC code', '<span class="mono">' + esc(full.ifscCode) + '</span>') : '') +
+        (full.swiftCode ? dl('SWIFT / BIC', '<span class="mono">' + esc(full.swiftCode) + '</span>') : '') +
+        (full.panNumber ? dl('PAN', '<span class="mono">' + esc(full.panNumber) + '</span>') : '') +
+        (full.taxIdNumber ? dl('Tax ID', '<span class="mono">' + esc(full.taxIdNumber) + '</span>') : '') +
+        dl('Payment method', esc(pay.paymentMethod || '—'));
+      body =
+        '<div class="card-title" style="display:flex;justify-content:space-between;align-items:center">Payment account<button class="linklike" data-act="hide-pay">Hide</button></div>' +
+        '<div class="detail-list">' + rows + '</div>';
+    } else {
+      var revealBtn = pay.bankLast4
+        ? ' <button class="linklike" data-act="reveal-pay">' +
+          (state.contractsLoading ? 'Revealing…' : 'Reveal') +
+          '</button>'
+        : '';
+      body =
+        '<div class="card-title">Payment account</div><div class="detail-list">' +
+        dl('Account holder', esc(pay.accountHolder || '—')) +
+        dl('Bank account', '<span class="mono">' + (pay.bankLast4 ? '•••• •••• ' + esc(pay.bankLast4) : '—') + '</span>' + revealBtn) +
+        dl('Payment method', esc(pay.paymentMethod || '—')) +
+        dl('Tax status', esc(pay.taxStatus || '—')) +
+        '</div>';
+    }
+    return '<div class="card">' + body + '</div>';
   }
   function dl(k, v) {
     return '<div><div class="k">' + esc(k) + '</div><div class="v">' + v + '</div></div>';
@@ -540,13 +704,15 @@
 
   function contractHistory(contracts) {
     var head =
-      '<div class="st-headrow" style="display:grid;grid-template-columns:1.4fr 1fr 1fr 0.8fr 0.8fr"><div>Campaign / Brand</div><div>Start</div><div>End</div><div>Value</div><div>Status</div></div>';
+      '<div class="st-headrow" style="display:grid;grid-template-columns:1.4fr 1fr 1fr 0.8fr 0.8fr 90px"><div>Campaign / Brand</div><div>Start</div><div>End</div><div>Value</div><div>Status</div><div></div></div>';
     var rows =
       contracts && contracts.length
         ? contracts
-            .map(function (ct) {
+            .map(function (ct, i) {
               return (
-                '<div class="st-row" style="display:grid;grid-template-columns:1.4fr 1fr 1fr 0.8fr 0.8fr">' +
+                '<div class="st-row st-row-click" data-act="view-contract" data-idx="' +
+                i +
+                '" style="display:grid;grid-template-columns:1.4fr 1fr 1fr 0.8fr 0.8fr 90px;cursor:pointer">' +
                 '<div><div style="font-weight:600">' +
                 esc(ct.campaign) +
                 '</div><div class="dim" style="font-size:12px">' +
@@ -564,12 +730,19 @@
                 statusStyle(ct.status) +
                 '">' +
                 esc(ct.status) +
-                '</span></div></div>'
+                '</span></div>' +
+                '<div class="dim" style="font-size:12px;font-weight:600">View →</div></div>'
               );
             })
             .join('')
         : '<div class="empty">No contracts on record.</div>';
-    return '<div class="section-table"><div class="st-title">Contract history</div>' + head + rows + '</div>';
+    var title =
+      '<div class="st-title" style="display:flex;justify-content:space-between;align-items:center">Contract history' +
+      (contracts && contracts.length
+        ? '<span class="dim" style="font-size:12px;font-weight:500">Click a row to view the signed contract</span>'
+        : '') +
+      '</div>';
+    return '<div class="section-table">' + title + head + rows + '</div>';
   }
 
   function deliverablesTab(p) {
@@ -679,10 +852,27 @@
   }
 
   root.addEventListener('click', function (e) {
+    // Clicking the dimmed backdrop (but not the dialog) closes the modal.
+    if (e.target.classList && e.target.classList.contains('modal-overlay')) {
+      return setState({ modalContractId: null });
+    }
     var el = e.target.closest('[data-act]');
     if (!el) return;
     var act = el.getAttribute('data-act');
     if (act === 'theme') return toggleTheme();
+    if (act === 'reveal-pay') {
+      return loadContractsFull(function () {
+        setState({ revealPay: true });
+      });
+    }
+    if (act === 'hide-pay') return setState({ revealPay: false });
+    if (act === 'view-contract') {
+      var idx = parseInt(el.getAttribute('data-idx'), 10) || 0;
+      return loadContractsFull(function () {
+        setState({ modalContractId: idx });
+      });
+    }
+    if (act === 'close-modal') return setState({ modalContractId: null });
     if (act === 'signout') {
       fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(function () {});
       setState({ view: 'login', username: '', password: '', selectedId: null, expandedId: null });
@@ -701,6 +891,11 @@
     }
     if (act === 'back') return setState({ selectedId: null, profile: null });
     if (act === 'tab') return setState({ activeTab: el.getAttribute('data-tab') });
+  });
+
+  // Escape closes the signed-contract modal.
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && state.modalContractId !== null) setState({ modalContractId: null });
   });
 
   root.addEventListener('submit', function (e) {

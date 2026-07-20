@@ -20,4 +20,14 @@ export class RosterController {
   profile(@Param('id') id: string) {
     return this.roster.profile(id);
   }
+
+  /**
+   * Full signed contracts for a creator — unredacted payout details + signature
+   * image, for payment processing and contract review. Same auth as every other
+   * read (admin session or x-api-key via the global ReadAccessGuard).
+   */
+  @Get(':id/contracts')
+  contracts(@Param('id') id: string) {
+    return this.roster.contractsFull(id);
+  }
 }
