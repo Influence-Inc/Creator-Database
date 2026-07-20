@@ -137,12 +137,31 @@ export class RosterService {
       contractsByCreator.set(ct.creatorId, e);
     }
 
+    // Distinct campaigns a creator has been part of, drawn from every source
+    // that names one (master record + stats snapshots + contracts). Drives the
+    // new-vs-returning chip: 2+ distinct campaigns = returning, else new.
+    const campaignsByCreator = new Map<string, Set<string>>();
+    const addCampaign = (creatorId: string, name: string | null | undefined): void => {
+      const key = (name ?? '').trim().toLowerCase();
+      if (!key) return;
+      let set = campaignsByCreator.get(creatorId);
+      if (!set) {
+        set = new Set<string>();
+        campaignsByCreator.set(creatorId, set);
+      }
+      set.add(key);
+    };
+    for (const c of creators) addCampaign(c.id, c.campaignName);
+    for (const s of stats) addCampaign(s.creatorId, s.campaignName);
+    for (const ct of contracts) addCampaign(ct.creatorId, ct.campaignName);
+
     const order = ['IG', 'TT', 'YT'];
     const mapped = creators.map((c) => {
       const st = statsByCreator.get(c.id);
       const ct = contractsByCreator.get(c.id);
       const platforms = st ? order.filter((code) => st.platforms.has(code)) : [];
       const name = this.displayName(c);
+      const campaignCount = campaignsByCreator.get(c.id)?.size ?? 0;
       return {
         id: c.id,
         name,
@@ -150,6 +169,8 @@ export class RosterService {
         initials: this.initials(name),
         platforms,
         campaigns: st?.count ?? 0,
+        campaignCount,
+        segment: campaignCount >= 2 ? 'returning' : 'new',
         views: st?.views ?? c.averageViews ?? 0,
         cpm: c.cpm,
         engagement: this.engagementPct(c.engagementRate),

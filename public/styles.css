@@ -752,3 +752,20 @@ button {
     grid-template-columns: 1fr;
   }
 }
+
+/* New-vs-returning chip in the roster (next to the creator name). */
+.seg-chip {
+  display: inline-block;
+  margin-left: 8px;
+  vertical-align: middle;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.seg-chip.returning { background: var(--risk-low-bg); color: var(--risk-low-fg); }
+.seg-chip.new { background: var(--surface-alt); color: var(--text-muted); border-color: var(--border); }
