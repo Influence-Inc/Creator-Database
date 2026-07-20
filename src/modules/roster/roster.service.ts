@@ -233,6 +233,73 @@ export class RosterService {
     };
   }
 
+  /**
+   * Full, UNREDACTED signed contracts for a creator — including the complete
+   * payout details (full account number / IBAN) and the signature image. This
+   * is the payment-processing / contract-review view, deliberately separate from
+   * profile() (which masks payout data) so the sensitive fields are only sent on
+   * an explicit admin request, still behind the same auth guard.
+   */
+  async contractsFull(creatorId: string) {
+    const creator = await this.prisma.creator.findUnique({
+      where: { id: creatorId },
+      select: { id: true, creatorName: true, instagramUsername: true },
+    });
+    if (!creator) throw new NotFoundException(`Creator ${creatorId} not found`);
+
+    const contracts = await this.prisma.contract.findMany({
+      where: { creatorId },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return {
+      creatorId: creator.id,
+      creatorName: creator.creatorName ?? creator.instagramUsername ?? null,
+      contracts: contracts.map((c) => ({
+        id: c.id,
+        contractRef: c.contractRef,
+        contractUrl: c.contractUrl,
+        status: this.contractStatusLabel(c.status),
+        // Campaign + deliverables
+        brandName: c.brandName,
+        campaignName: c.campaignName,
+        platform: c.platform,
+        deliverables: c.deliverables,
+        numberOfDeliverables: c.numberOfDeliverables,
+        timeline: c.timeline,
+        deadline: c.deadline ? c.deadline.toISOString() : null,
+        usageRights: c.usageRights,
+        exclusivity: c.exclusivity,
+        guaranteedViews: c.guaranteedViews,
+        // Commercial
+        compensation: c.compensation,
+        currency: c.currency ?? 'USD',
+        paymentTerms: c.paymentTerms,
+        specialNotes: c.specialNotes,
+        additionalTerms: c.additionalTerms,
+        // Signer + identity
+        signerName: c.signerName,
+        signerEmail: c.signerEmail,
+        signerPhone: c.signerPhone,
+        signerGender: c.signerGender,
+        signerSignedDate: c.signerSignedDate ? c.signerSignedDate.toISOString() : null,
+        signedAt: c.signedAt ? c.signedAt.toISOString() : null,
+        address: {
+          line1: c.addressLine1,
+          line2: c.addressLine2,
+          city: c.addressCity,
+          state: c.addressState,
+          postalCode: c.addressPostalCode,
+          country: c.addressCountry,
+        },
+        // Full payout details (unredacted) + the drawn signature.
+        payment: (c.paymentDetails as Record<string, unknown> | null) ?? null,
+        signatureImage: c.signatureImage ?? null,
+        createdAt: c.createdAt.toISOString(),
+      })),
+    };
+  }
+
   private buildContact(creator: Creator, contracts: Contract[]) {
     const withAddr = contracts.find((c) => c.addressLine1 || c.addressCity || c.addressCountry);
     const addr = withAddr
