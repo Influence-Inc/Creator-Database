@@ -78,6 +78,19 @@
     var k = riskClass(risk);
     return 'background:var(--risk-' + k + '-bg);color:var(--risk-' + k + '-fg)';
   }
+
+  // New-vs-returning chip. "Returning" = the creator has 2+ campaigns on record;
+  // "New" = a single campaign so far. Purely informational (who's worked with us
+  // before), computed server-side in the /roster read-model.
+  function segChip(c) {
+    if (c.segment !== 'returning' && c.segment !== 'new') return '';
+    var label = c.segment === 'returning' ? 'Returning' : 'New';
+    var title =
+      c.segment === 'returning'
+        ? 'Returning creator — ' + (c.campaignCount || 2) + ' campaigns on record'
+        : 'New creator — first campaign on record';
+    return '<span class="seg-chip ' + c.segment + '" title="' + esc(title) + '">' + label + '</span>';
+  }
   function statusStyle(status) {
     var map = { Active: 'active', Completed: 'completed', Pending: 'pending' };
     var k = map[status] || 'completed';
@@ -301,6 +314,7 @@
       esc(c.initials) +
       '</div><div><div class="creator-name">' +
       esc(c.name) +
+      segChip(c) +
       '</div><div class="creator-handle mono">' +
       esc(c.handle) +
       '</div></div></div>' +
