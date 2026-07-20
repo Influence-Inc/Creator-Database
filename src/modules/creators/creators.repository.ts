@@ -25,6 +25,27 @@ export class CreatorsRepository {
     return db.creator.findUnique({ where: { instagramUsername } });
   }
 
+  /**
+   * Batch-load creators by Instagram handle with just enough campaign history to
+   * decide new-vs-old segmentation: the master campaign plus every contract and
+   * per-campaign stats snapshot (each of which names the campaign it belongs to).
+   */
+  findManyByInstagramWithHistory(instagramUsernames: string[], db: Db = this.prisma) {
+    return db.creator.findMany({
+      where: { instagramUsername: { in: instagramUsernames } },
+      select: {
+        id: true,
+        creatorName: true,
+        instagramUsername: true,
+        email: true,
+        phoneNumber: true,
+        campaignName: true,
+        contracts: { select: { campaignName: true, brandName: true, status: true } },
+        stats: { select: { campaignName: true, brandName: true, statsCampaignId: true } },
+      },
+    });
+  }
+
   findByName(creatorName: string, db: Db = this.prisma): Promise<Creator | null> {
     return db.creator.findFirst({ where: { creatorName } });
   }
