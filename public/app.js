@@ -82,17 +82,23 @@
   // New-vs-returning chip. "Returning" = the creator has 2+ campaigns on record;
   // "New" = a single campaign so far. Purely informational (who's worked with us
   // before), computed server-side in the /roster read-model.
-  // Used-vs-unused chip. "Used" = the creator has signed a contract for at least
-  // one campaign; "Unused" = has never signed one. Computed server-side in the
-  // /roster read-model (segment: 'used' | 'unused').
+  // Used-vs-unused chip. "Used" = we've worked with this creator — they've
+  // signed a contract and/or we hold their campaign performance from
+  // influence-stats. "Unused" = no contract and no performance history yet.
+  // Computed server-side in the /roster read-model (segment: 'used' | 'unused').
   function segChip(c) {
     if (c.segment !== 'used' && c.segment !== 'unused') return '';
     var label = c.segment === 'used' ? 'Used' : 'Unused';
-    var n = c.signedContracts || 0;
-    var title =
-      c.segment === 'used'
-        ? 'Used creator — signed ' + n + ' contract' + (n === 1 ? '' : 's')
-        : 'Unused creator — no signed contract yet';
+    var signed = c.signedContracts || 0;
+    var camps = c.campaigns || 0;
+    var title;
+    if (c.segment !== 'used') {
+      title = 'Unused creator — no contract or performance on record yet';
+    } else if (signed >= 1) {
+      title = 'Used creator — signed ' + signed + ' contract' + (signed === 1 ? '' : 's');
+    } else {
+      title = 'Used creator — ' + camps + ' campaign' + (camps === 1 ? '' : 's') + ' on record (performance data)';
+    }
     return '<span class="seg-chip ' + c.segment + '" title="' + esc(title) + '">' + label + '</span>';
   }
 
@@ -897,25 +903,32 @@
   }
 
   function campaignsTab(p) {
-    var cols = 'display:grid;grid-template-columns:1.5fr 1.7fr 1.5fr 1fr 0.8fr;gap:12px';
+    // Prefer the merged list (contracts + influence-stats); fall back to
+    // contracts for older API responses.
+    var list = p.campaignList && p.campaignList.length ? p.campaignList : p.contracts;
+    var cols = 'display:grid;grid-template-columns:1.5fr 1.6fr 1.3fr 0.8fr 1fr 0.8fr;gap:12px';
     var head =
-      '<div class="st-headrow" style="' + cols + '"><div>Campaign / Brand</div><div>Deliverables</div><div>Usage rights</div><div>Dates</div><div>Status</div></div>';
+      '<div class="st-headrow" style="' + cols + '"><div>Campaign / Brand</div><div>Deliverables</div><div>Usage rights</div><div>Views</div><div>Dates</div><div>Status</div></div>';
     var rows =
-      p.contracts && p.contracts.length
-        ? p.contracts
+      list && list.length
+        ? list
             .map(function (ct) {
               var delivSub = [ct.platform, ct.numberOfDeliverables ? ct.numberOfDeliverables + ' deliverable' + (ct.numberOfDeliverables === 1 ? '' : 's') : null]
                 .filter(Boolean)
                 .join(' · ');
               var rightsSub = ct.exclusivity && ct.exclusivity !== 'None' ? 'Exclusivity: ' + ct.exclusivity : '';
               var due = ct.deadline || ct.end;
+              // Where this campaign row came from — contract, stats, or both.
+              var srcLabel = ct.source === 'stats' ? 'From performance data' : ct.source === 'both' ? 'Contract + performance' : '';
               return (
                 '<div class="st-row" style="' + cols + '">' +
                 '<div><div style="font-weight:600">' +
                 esc(ct.campaign) +
                 '</div><div class="dim" style="font-size:12px">' +
                 esc(ct.brand) +
-                '</div></div>' +
+                '</div>' +
+                (srcLabel ? '<div class="dim" style="font-size:11px;opacity:.7">' + esc(srcLabel) + '</div>' : '') +
+                '</div>' +
                 '<div><div>' +
                 esc(ct.deliverables || '—') +
                 '</div>' +
@@ -925,6 +938,9 @@
                 esc(ct.usageRights || '—') +
                 '</div>' +
                 (rightsSub ? '<div class="dim" style="font-size:12px">' + esc(rightsSub) + '</div>' : '') +
+                '</div>' +
+                '<div class="mono">' +
+                (ct.views != null ? fmtNum(ct.views) : '—') +
                 '</div>' +
                 '<div class="dim"><div>' +
                 fmtMonth(ct.start) +
