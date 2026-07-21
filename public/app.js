@@ -22,11 +22,22 @@
     usageFilter: 'Used', // Used (default) | Unused | All
     expandedId: null,
     selectedId: null,
-    activeTab: 'overview',
+    activeTab: 'performance',
+    // Inline edit state for the Contact & Payment cards.
+    editContact: false,
+    editPayment: false,
+    saving: false,
+    saveError: null,
     roster: null, // {creators, total} | null (loading)
     rosterError: false,
     profile: null,
     profileLoading: false,
+    // Full (unredacted) contracts for the selected creator — fetched on demand
+    // when the admin reveals the account number or opens a signed contract.
+    contractsFull: null,
+    contractsLoading: false,
+    revealPay: false,
+    modalContractId: null,
   };
 
   var root = document.getElementById('root');
@@ -68,17 +79,9 @@
     if (isNaN(d.getTime())) return '—';
     return d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
   }
-  function riskClass(risk) {
-    if (risk === 'Low') return 'low';
-    if (risk === 'Med') return 'med';
-    if (risk === 'High') return 'high';
-    return 'pending';
-  }
-  function riskStyle(risk) {
-    var k = riskClass(risk);
-    return 'background:var(--risk-' + k + '-bg);color:var(--risk-' + k + '-fg)';
-  }
-
+  // New-vs-returning chip. "Returning" = the creator has 2+ campaigns on record;
+  // "New" = a single campaign so far. Purely informational (who's worked with us
+  // before), computed server-side in the /roster read-model.
   // Used-vs-unused chip. "Used" = the creator has signed a contract for at least
   // one campaign; "Unused" = has never signed one. Computed server-side in the
   // /roster read-model (segment: 'used' | 'unused').
@@ -93,12 +96,27 @@
     return '<span class="seg-chip ' + c.segment + '" title="' + esc(title) + '">' + label + '</span>';
   }
 
-  // Used/Unused roster filter (replaces the old risk filter). "Used" is the
-  // default so the roster leads with creators we've actually worked with.
+  // Used/Unused roster filter. "Used" is the default so the roster leads with
+  // creators we've actually worked with (signed a contract).
   function matchesUsage(c) {
     if (state.usageFilter === 'All') return true;
     if (state.usageFilter === 'Unused') return c.segment === 'unused';
     return c.segment === 'used';
+  }
+  function usageChips() {
+    return ['Used', 'Unused', 'All']
+      .map(function (r) {
+        return (
+          '<button class="chip' +
+          (state.usageFilter === r ? ' active' : '') +
+          '" data-act="usage" data-usage="' +
+          r +
+          '">' +
+          r +
+          '</button>'
+        );
+      })
+      .join('');
   }
   function statusStyle(status) {
     var map = { Active: 'active', Completed: 'completed', Pending: 'pending' };
@@ -139,6 +157,10 @@
   function loadProfile(id) {
     state.profile = null;
     state.profileLoading = true;
+    state.contractsFull = null;
+    state.contractsLoading = false;
+    state.revealPay = false;
+    state.modalContractId = null;
     render();
     fetch('/roster/' + encodeURIComponent(id), { credentials: 'same-origin' })
       .then(function (r) {
@@ -160,6 +182,134 @@
         state.profile = null;
         render();
       });
+  }
+
+  // Fetch the full (unredacted) contracts for the selected creator, once, then
+  // run `cb`. Used by both "reveal account number" and "view signed contract".
+  function loadContractsFull(cb) {
+    if (state.contractsFull) return cb();
+    if (state.contractsLoading) return;
+    state.contractsLoading = true;
+    render();
+    fetch('/roster/' + encodeURIComponent(state.selectedId) + '/contracts', {
+      credentials: 'same-origin',
+    })
+      .then(function (r) {
+        if (r.status === 401) {
+          state.view = 'login';
+          state.selectedId = null;
+          throw new Error('unauthorized');
+        }
+        if (!r.ok) throw new Error('contracts ' + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        state.contractsFull = data && data.contracts ? data.contracts : [];
+        state.contractsLoading = false;
+        cb();
+      })
+      .catch(function () {
+        state.contractsLoading = false;
+        state.contractsFull = state.view === 'login' ? null : [];
+        render();
+      });
+  }
+
+  // ---- inline editing (contact + payout details) --------------------------
+  function fieldVal(id) {
+    var el = document.getElementById(id);
+    return el ? el.value : '';
+  }
+
+  // PATCH the edited details to the API, then refresh the profile in place.
+  // `onSuccess` runs after the profile is replaced (e.g. to leave edit mode).
+  function saveDetails(body, onSuccess) {
+    state.saving = true;
+    state.saveError = null;
+    render();
+    fetch('/roster/' + encodeURIComponent(state.selectedId) + '/details', {
+      method: 'PATCH',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+      .then(function (r) {
+        if (r.status === 401) {
+          state.view = 'login';
+          state.selectedId = null;
+          throw new Error('unauthorized');
+        }
+        return r.json().then(function (j) {
+          return { ok: r.ok, j: j };
+        });
+      })
+      .then(function (res) {
+        if (!res.ok) {
+          var m = res.j && res.j.message;
+          throw new Error(Array.isArray(m) ? m.join(', ') : m || 'Save failed');
+        }
+        state.profile = res.j;
+        state.contractsFull = null; // force a re-fetch of the unredacted view
+        state.saving = false;
+        state.saveError = null;
+        onSuccess();
+      })
+      .catch(function (err) {
+        state.saving = false;
+        if (err && err.message === 'unauthorized') {
+          render();
+          return;
+        }
+        state.saveError = (err && err.message) || 'Save failed';
+        render();
+      });
+  }
+
+  function saveContact() {
+    if (state.saving) return;
+    saveDetails(
+      {
+        contact: {
+          email: fieldVal('ec-email'),
+          phone: fieldVal('ec-phone'),
+          address: {
+            line1: fieldVal('ec-line1'),
+            line2: fieldVal('ec-line2'),
+            city: fieldVal('ec-city'),
+            state: fieldVal('ec-state'),
+            postalCode: fieldVal('ec-zip'),
+            country: fieldVal('ec-country'),
+          },
+        },
+      },
+      function () {
+        state.editContact = false;
+        render();
+      },
+    );
+  }
+
+  function savePayment() {
+    if (state.saving) return;
+    saveDetails(
+      {
+        payment: {
+          accountHolderName: fieldVal('ep-holder'),
+          bankName: fieldVal('ep-bank'),
+          accountNumber: fieldVal('ep-acct'),
+          iban: fieldVal('ep-iban'),
+          routingNumber: fieldVal('ep-routing'),
+          ifscCode: fieldVal('ep-ifsc'),
+          swiftCode: fieldVal('ep-swift'),
+          panNumber: fieldVal('ep-pan'),
+          taxIdNumber: fieldVal('ep-taxid'),
+        },
+      },
+      function () {
+        state.editPayment = false;
+        render();
+      },
+    );
   }
 
   // ---- theme --------------------------------------------------------------
@@ -242,8 +392,7 @@
           !q ||
           (c.name && c.name.toLowerCase().indexOf(q) >= 0) ||
           (c.handle && c.handle.toLowerCase().indexOf(q) >= 0);
-        var mu = matchesUsage(c);
-        return mq && mu;
+        return mq && matchesUsage(c);
       });
       var countLabel = list.length + ' of ' + data.total + ' creators';
 
@@ -261,20 +410,6 @@
         rows = list.map(rosterRow).join('');
       }
 
-      var chips = ['Used', 'Unused', 'All']
-        .map(function (r) {
-          return (
-            '<button class="chip' +
-            (state.usageFilter === r ? ' active' : '') +
-            '" data-act="usage" data-usage="' +
-            r +
-            '">' +
-            r +
-            '</button>'
-          );
-        })
-        .join('');
-
       body =
         '<div class="page-head">' +
         '<div><div class="page-title">Creator roster</div><div class="page-sub">' +
@@ -284,10 +419,10 @@
         '<div class="search"><span>⚲</span><input id="search" type="text" placeholder="Search name or @handle" value="' +
         esc(state.search) +
         '"></div>' +
-        chips +
+        usageChips() +
         '</div></div>' +
         '<div class="table">' +
-        '<div class="roster-grid roster-head"><div>Creator</div><div class="hide-sm">Platforms</div><div class="hide-sm">Campaigns</div><div>Total views</div><div class="hide-sm">CPM</div><div class="hide-sm">Engagement</div><div>Risk</div><div></div></div>' +
+        '<div class="roster-grid roster-head"><div>Creator</div><div class="hide-sm">Platforms</div><div class="hide-sm">Campaigns</div><div>Total views</div><div class="hide-sm">CPM</div><div class="hide-sm">Engagement</div><div></div></div>' +
         rows +
         '</div>';
     }
@@ -303,8 +438,6 @@
       .join('');
     var detail = expanded
       ? '<div class="row-detail fade">' +
-        kv('Followers', fmtNum(c.followers)) +
-        kv('Signature on file', c.signature ? 'On file' : 'Missing') +
         kv('Active contracts', String(c.activeContracts)) +
         kv('Last campaign', esc(c.lastCampaign || '—')) +
         '<button class="btn-accent" style="margin-left:auto" data-act="open" data-id="' +
@@ -342,11 +475,6 @@
       '<div class="cell hide-sm">' +
       fmtPct(c.engagement) +
       '</div>' +
-      '<div><span class="badge" style="' +
-      riskStyle(c.risk) +
-      '">' +
-      esc(c.risk || '—') +
-      '</span></div>' +
       '<div class="chev' +
       (expanded ? ' open' : '') +
       '">›</div>' +
@@ -362,10 +490,8 @@
 
   // ---- profile ------------------------------------------------------------
   var TAB_DEFS = [
-    { key: 'overview', label: 'Overview' },
-    { key: 'contract', label: 'Contract & Legal' },
-    { key: 'deliverables', label: 'Deliverables & Rights' },
     { key: 'performance', label: 'Performance' },
+    { key: 'contract', label: 'Contract & Legal' },
     { key: 'campaigns', label: 'Campaigns' },
   ];
 
@@ -383,7 +509,100 @@
         tabsBar() +
         tabContent(p);
     }
-    return '<div class="app">' + topbar() + '<div class="page profile fade">' + inner + '</div></div>';
+    return (
+      '<div class="app">' +
+      topbar() +
+      '<div class="page profile fade">' +
+      inner +
+      '</div>' +
+      contractModal() +
+      '</div>'
+    );
+  }
+
+  // Full signed-contract viewer (modal): signature image + all terms + the full
+  // (unredacted) payout details. state.modalContractId is the index into
+  // state.contractsFull, or null when closed.
+  function contractModal() {
+    if (state.modalContractId === null) return '';
+    var list = state.contractsFull || [];
+    var c = list[state.modalContractId];
+    if (!c) return '';
+    var addr = c.address || {};
+    var addrStr = [addr.line1, addr.line2, addr.city, addr.state, addr.postalCode, addr.country]
+      .filter(Boolean)
+      .join(', ');
+    var pay = c.payment || {};
+    var sig = c.signatureImage
+      ? '<img class="sig-img" src="' + esc(c.signatureImage) + '" alt="signature">'
+      : '<div class="dim" style="font-size:13px">No signature image on file.</div>';
+
+    function row(k, v) {
+      return v ? '<div class="mrow"><span class="mk">' + esc(k) + '</span><span class="mv">' + v + '</span></div>' : '';
+    }
+    var mono = function (v) {
+      return v ? '<span class="mono">' + esc(v) + '</span>' : '';
+    };
+
+    var signer =
+      row('Signed by', esc(c.signerName)) +
+      row('Email', mono(c.signerEmail)) +
+      row('Phone', mono(c.signerPhone)) +
+      row('Gender', esc(c.signerGender)) +
+      row('Address', esc(addrStr)) +
+      row('Signed date', c.signedAt ? fmtDate(c.signedAt) : c.signerSignedDate ? fmtDate(c.signerSignedDate) : '') +
+      row('Status', '<span class="badge badge-sm" style="' + statusStyle(c.status) + '">' + esc(c.status) + '</span>');
+
+    var payment =
+      row('Account holder', esc(pay.accountHolderName)) +
+      row('Bank name', esc(pay.bankName)) +
+      row('Account number', mono(pay.accountNumber)) +
+      row('IBAN', mono(pay.iban)) +
+      row('Routing number', mono(pay.routingNumber)) +
+      row('IFSC code', mono(pay.ifscCode)) +
+      row('SWIFT / BIC', mono(pay.swiftCode)) +
+      row('PAN', mono(pay.panNumber)) +
+      row('Tax ID', mono(pay.taxIdNumber));
+    if (!payment) payment = '<div class="dim" style="font-size:13px">No payout details on file.</div>';
+
+    var terms =
+      row('Brand', esc(c.brandName)) +
+      row('Campaign', esc(c.campaignName)) +
+      row('Platform', esc(c.platform)) +
+      row('Deliverables', esc(c.deliverables)) +
+      row('No. of deliverables', c.numberOfDeliverables != null ? esc(String(c.numberOfDeliverables)) : '') +
+      row('Timeline', esc(c.timeline)) +
+      row('Deadline', c.deadline ? fmtDate(c.deadline) : '') +
+      row('Usage rights', esc(c.usageRights)) +
+      row('Exclusivity', esc(c.exclusivity)) +
+      row('Guaranteed views', c.guaranteedViews != null ? fmtNum(c.guaranteedViews) : '') +
+      row('Compensation', c.compensation != null ? mono(fmtMoney(c.compensation, c.currency)) : '') +
+      row('Payment terms', esc(c.paymentTerms)) +
+      row('Special notes', esc(c.specialNotes));
+
+    var multi =
+      list.length > 1
+        ? '<span class="dim" style="font-size:12px;font-weight:500;margin-left:8px">(' + (state.modalContractId + 1) + ' of ' + list.length + ')</span>'
+        : '';
+    var link = c.contractUrl
+      ? '<a href="' + esc(c.contractUrl) + '" target="_blank" rel="noopener" class="linklike">Open original ↗</a>'
+      : '';
+
+    return (
+      '<div class="modal-overlay">' +
+      '<div class="modal">' +
+      '<div class="modal-head"><div style="font-size:16px;font-weight:700">Signed contract' +
+      multi +
+      '</div><div style="display:flex;gap:16px;align-items:center">' +
+      link +
+      '<button class="modal-x" data-act="close-modal" aria-label="Close">✕</button></div></div>' +
+      '<div class="modal-body">' +
+      '<div class="msec"><div class="msec-t">Signature</div><div class="sig-box">' + sig + '</div></div>' +
+      '<div class="msec"><div class="msec-t">Signer &amp; identity</div>' + signer + '</div>' +
+      '<div class="msec"><div class="msec-t">Payment account (full)</div>' + payment + '</div>' +
+      '<div class="msec"><div class="msec-t">Contract terms</div>' + (terms || '<div class="dim" style="font-size:13px">—</div>') + '</div>' +
+      '</div></div></div>'
+    );
   }
 
   function heroCard(p) {
@@ -393,18 +612,13 @@
       esc(p.initials) +
       '</div>' +
       '<div style="flex:1;min-width:200px">' +
-      '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><div class="hero-name">' +
+      '<div class="hero-name">' +
       esc(p.name) +
-      '</div><span class="badge" style="' +
-      riskStyle(p.risk) +
-      '">' +
-      esc(p.risk || '—') +
-      ' risk</span></div>' +
+      '</div>' +
       '<div class="creator-handle mono" style="margin-top:3px">' +
       esc(p.handle) +
       '</div></div>' +
       '<div class="hero-stats">' +
-      stat('Followers', fmtNum(p.followers)) +
       stat('Total views', fmtNum(p.views)) +
       stat('CPM', fmtCpm(p.cpm)) +
       stat('Campaigns', String(p.campaigns)) +
@@ -435,16 +649,12 @@
 
   function tabContent(p) {
     switch (state.activeTab) {
-      case 'contract':
-        return contractTab(p);
-      case 'deliverables':
-        return deliverablesTab(p);
-      case 'performance':
-        return performanceTab(p);
       case 'campaigns':
         return campaignsTab(p);
+      case 'performance':
+        return performanceTab(p);
       default:
-        return overviewTab(p);
+        return contractTab(p);
     }
   }
 
@@ -473,73 +683,151 @@
       .join('');
   }
 
-  function overviewTab(p) {
-    var ra = p.riskAssessment || { note: '—', factors: {} };
+  function contractTab(p) {
     return (
       '<div class="grid-2">' +
-      '<div class="card"><div class="card-title">Platform performance</div>' +
-      bars(p.platformBreakdown, function (pf) {
-        return fmtNum(pf.views) + ' views · ' + fmtPct(pf.engagement) + ' eng.';
-      }) +
-      '</div>' +
-      '<div class="card"><div class="card-title">Risk assessment</div>' +
-      '<div class="dim" style="font-size:13px;line-height:1.7">' +
-      esc(ra.note) +
-      '</div>' +
-      '<div style="margin-top:18px;display:flex;flex-direction:column;gap:10px">' +
-      riskFactor('Content compliance', ra.factors.compliance) +
-      riskFactor('Payment / tax', ra.factors.payment) +
-      riskFactor('Delivery reliability', ra.factors.delivery) +
-      '</div></div>' +
-      '</div>'
-    );
-  }
-  function riskFactor(lbl, val) {
-    return (
-      '<div class="risk-factor"><span class="lbl">' +
-      esc(lbl) +
-      '</span><span class="val">' +
-      esc(val || '—') +
-      '</span></div>'
+      contactCard(p) +
+      paymentCard(p) +
+      '<div style="grid-column:1/-1">' +
+      contractHistory(p.contracts) +
+      '</div></div>'
     );
   }
 
-  function contractTab(p) {
+  // Small input used inside the editable cards.
+  function editInput(id, value, placeholder) {
+    return (
+      '<input class="edit-input" id="' +
+      id +
+      '" value="' +
+      esc(value || '') +
+      '" placeholder="' +
+      esc(placeholder || '') +
+      '">'
+    );
+  }
+  function cardTitleBar(label, editing, editAct, saveAct, cancelAct) {
+    var right = editing
+      ? '<span style="display:flex;gap:14px">' +
+        '<button class="linklike" data-act="' + cancelAct + '"' + (state.saving ? ' disabled' : '') + '>Cancel</button>' +
+        '<button class="linklike" data-act="' + saveAct + '"' + (state.saving ? ' disabled' : '') + '>' +
+        (state.saving ? 'Saving…' : 'Save') +
+        '</button></span>'
+      : '<button class="linklike" data-act="' + editAct + '">Edit</button>';
+    return (
+      '<div class="card-title" style="display:flex;justify-content:space-between;align-items:center">' +
+      label +
+      right +
+      '</div>'
+    );
+  }
+
+  function contactCard(p) {
     var ct = p.contact || {};
+    var af = ct.addressFields || {};
+    var body;
+    if (state.editContact) {
+      body =
+        '<div class="detail-list">' +
+        dl('Email', editInput('ec-email', ct.email, 'email@example.com')) +
+        dl('Phone', editInput('ec-phone', ct.phone, '+1 555 123 4567')) +
+        dl(
+          'Address',
+          editInput('ec-line1', af.line1, 'Address line 1') +
+            '<div style="height:8px"></div>' +
+            editInput('ec-line2', af.line2, 'Address line 2 (optional)') +
+            '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">' +
+            editInput('ec-city', af.city, 'City') +
+            editInput('ec-state', af.state, 'State / Province') +
+            editInput('ec-zip', af.postalCode, 'Postal code') +
+            editInput('ec-country', af.country, 'Country') +
+            '</div>'
+        ) +
+        '</div>' +
+        (state.saveError ? '<div class="save-err">' + esc(state.saveError) + '</div>' : '');
+    } else {
+      body =
+        '<div class="detail-list">' +
+        dl('Registered address', esc(ct.address || '—')) +
+        dl('Phone', '<span class="mono">' + esc(ct.phone || '—') + '</span>') +
+        dl('Email', '<span class="mono">' + esc(ct.email || '—') + '</span>') +
+        '</div>';
+    }
+    return (
+      '<div class="card">' +
+      cardTitleBar('Contact &amp; identity', state.editContact, 'edit-contact', 'save-contact', 'cancel-contact') +
+      body +
+      '</div>'
+    );
+  }
+
+  // Payment account card. Masked by default; the admin can Reveal the full
+  // account/IBAN or Edit it (both fetch the full payout details on demand).
+  function paymentCard(p) {
     var pay = p.payment || {};
-    var sigLine = ct.signature
-      ? 'Signed · ' + fmtDate(ct.signedDate)
-      : 'Missing';
-    var contactCard =
-      '<div class="card"><div class="card-title">Contact &amp; identity</div><div class="detail-list">' +
-      dl('Registered address', esc(ct.address || '—')) +
-      dl('Phone', '<span class="mono">' + esc(ct.phone || '—') + '</span>') +
-      dl('Email', '<span class="mono">' + esc(ct.email || '—') + '</span>') +
-      dl(
-        'Signature on file',
-        '<span style="display:inline-flex;align-items:center;gap:8px"><span style="width:8px;height:8px;border-radius:50%;background:var(--risk-' +
-          (ct.signature ? 'low' : 'high') +
-          '-fg)"></span>' +
-          esc(sigLine) +
-          '</span>'
-      ) +
-      '</div></div>';
-    var payCard =
-      '<div class="card"><div class="card-title">Payment account</div><div class="detail-list">' +
+    var full =
+      state.contractsFull && state.contractsFull.length ? state.contractsFull[0].payment || {} : null;
+    var monoV = function (v) {
+      return '<span class="mono">' + esc(v) + '</span>';
+    };
+
+    // Edit mode — inputs seeded from the full (unredacted) payout details.
+    if (state.editPayment) {
+      var f = full || {};
+      var erows =
+        dl('Account holder', editInput('ep-holder', f.accountHolderName, 'Name on account')) +
+        dl('Bank name', editInput('ep-bank', f.bankName, 'Bank name')) +
+        dl('Account number', editInput('ep-acct', f.accountNumber, 'Account number')) +
+        dl('IBAN', editInput('ep-iban', f.iban, 'IBAN')) +
+        dl('Routing number', editInput('ep-routing', f.routingNumber, 'Routing number')) +
+        dl('IFSC code', editInput('ep-ifsc', f.ifscCode, 'IFSC code')) +
+        dl('SWIFT / BIC', editInput('ep-swift', f.swiftCode, 'SWIFT / BIC')) +
+        dl('PAN number', editInput('ep-pan', f.panNumber, 'PAN')) +
+        dl('Tax ID number', editInput('ep-taxid', f.taxIdNumber, 'Tax ID'));
+      return (
+        '<div class="card">' +
+        cardTitleBar('Payment account', true, 'edit-payment', 'save-payment', 'cancel-payment') +
+        '<div class="detail-list">' + erows + '</div>' +
+        (state.saveError ? '<div class="save-err">' + esc(state.saveError) + '</div>' : '') +
+        '</div>'
+      );
+    }
+
+    // Reveal (full) view.
+    if (state.revealPay && full) {
+      var rrows =
+        dl('Account holder', esc(full.accountHolderName || pay.accountHolder || '—')) +
+        (full.bankName ? dl('Bank name', esc(full.bankName)) : '') +
+        (full.accountNumber ? dl('Account number', monoV(full.accountNumber)) : '') +
+        (full.iban ? dl('IBAN', monoV(full.iban)) : '') +
+        (full.routingNumber ? dl('Routing number', monoV(full.routingNumber)) : '') +
+        (full.ifscCode ? dl('IFSC code', monoV(full.ifscCode)) : '') +
+        (full.swiftCode ? dl('SWIFT / BIC', monoV(full.swiftCode)) : '') +
+        (full.panNumber ? dl('PAN', monoV(full.panNumber)) : '') +
+        (full.taxIdNumber ? dl('Tax ID', monoV(full.taxIdNumber)) : '') +
+        dl('Payment method', esc(pay.paymentMethod || '—'));
+      return (
+        '<div class="card">' +
+        '<div class="card-title" style="display:flex;justify-content:space-between;align-items:center">Payment account' +
+        '<span style="display:flex;gap:14px"><button class="linklike" data-act="edit-payment">Edit</button><button class="linklike" data-act="hide-pay">Hide</button></span></div>' +
+        '<div class="detail-list">' + rrows + '</div></div>'
+      );
+    }
+
+    // Masked view.
+    var revealBtn = pay.bankLast4
+      ? ' <button class="linklike" data-act="reveal-pay">' +
+        (state.contractsLoading && !state.editPayment ? 'Revealing…' : 'Reveal') +
+        '</button>'
+      : '';
+    return (
+      '<div class="card">' +
+      '<div class="card-title" style="display:flex;justify-content:space-between;align-items:center">Payment account<button class="linklike" data-act="edit-payment">Edit</button></div>' +
+      '<div class="detail-list">' +
       dl('Account holder', esc(pay.accountHolder || '—')) +
-      dl(
-        'Bank account',
-        '<span class="mono">' + (pay.bankLast4 ? '•••• •••• ' + esc(pay.bankLast4) : '—') + '</span>'
-      ) +
+      dl('Bank account', '<span class="mono">' + (pay.bankLast4 ? '•••• •••• ' + esc(pay.bankLast4) : '—') + '</span>' + revealBtn) +
       dl('Payment method', esc(pay.paymentMethod || '—')) +
       dl('Tax status', esc(pay.taxStatus || '—')) +
-      '</div></div>';
-    return (
-      '<div class="grid-2">' +
-      contactCard +
-      payCard +
-      '<div style="grid-column:1/-1">' +
-      contractHistory(p.contracts) +
       '</div></div>'
     );
   }
@@ -549,13 +837,15 @@
 
   function contractHistory(contracts) {
     var head =
-      '<div class="st-headrow" style="display:grid;grid-template-columns:1.4fr 1fr 1fr 0.8fr 0.8fr"><div>Campaign / Brand</div><div>Start</div><div>End</div><div>Value</div><div>Status</div></div>';
+      '<div class="st-headrow" style="display:grid;grid-template-columns:1.4fr 1fr 1fr 0.8fr 0.8fr 90px"><div>Campaign / Brand</div><div>Start</div><div>End</div><div>Value</div><div>Status</div><div></div></div>';
     var rows =
       contracts && contracts.length
         ? contracts
-            .map(function (ct) {
+            .map(function (ct, i) {
               return (
-                '<div class="st-row" style="display:grid;grid-template-columns:1.4fr 1fr 1fr 0.8fr 0.8fr">' +
+                '<div class="st-row st-row-click" data-act="view-contract" data-idx="' +
+                i +
+                '" style="display:grid;grid-template-columns:1.4fr 1fr 1fr 0.8fr 0.8fr 90px;cursor:pointer">' +
                 '<div><div style="font-weight:600">' +
                 esc(ct.campaign) +
                 '</div><div class="dim" style="font-size:12px">' +
@@ -573,56 +863,19 @@
                 statusStyle(ct.status) +
                 '">' +
                 esc(ct.status) +
-                '</span></div></div>'
+                '</span></div>' +
+                '<div class="dim" style="font-size:12px;font-weight:600">View →</div></div>'
               );
             })
             .join('')
         : '<div class="empty">No contracts on record.</div>';
-    return '<div class="section-table"><div class="st-title">Contract history</div>' + head + rows + '</div>';
-  }
-
-  function deliverablesTab(p) {
-    var head =
-      '<div class="st-headrow" style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr"><div>Deliverables</div><div>Platform</div><div>Due</div><div>Status</div></div>';
-    var rows =
-      p.deliverables && p.deliverables.length
-        ? p.deliverables
-            .map(function (d) {
-              return (
-                '<div class="st-row" style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr">' +
-                '<div style="font-weight:600">' +
-                esc(d.type) +
-                '</div><div class="dim">' +
-                esc(d.platform) +
-                '</div><div class="dim">' +
-                fmtDate(d.due) +
-                '</div>' +
-                '<div><span class="badge badge-sm" style="' +
-                statusStyle(d.status) +
-                '">' +
-                esc(d.status) +
-                '</span></div></div>'
-              );
-            })
-            .join('')
-        : '<div class="empty">No deliverables recorded.</div>';
-    var ur = p.usageRights || {};
-    var rights =
-      '<div class="card grid-4" style="gap:20px">' +
-      kv('Usage rights', esc(ur.usageRights || '—')) +
-      kv('Exclusivity', esc(ur.exclusivity || '—')) +
-      kv('Paid ad rights', esc(ur.paidAdRights || '—')) +
-      kv('Deadline', fmtDate(ur.deadline)) +
+    var title =
+      '<div class="st-title" style="display:flex;justify-content:space-between;align-items:center">Contract history' +
+      (contracts && contracts.length
+        ? '<span class="dim" style="font-size:12px;font-weight:500">Click a row to view the signed contract</span>'
+        : '') +
       '</div>';
-    return (
-      '<div style="display:flex;flex-direction:column;gap:20px">' +
-      '<div class="section-table"><div class="st-title">Deliverables</div>' +
-      head +
-      rows +
-      '</div>' +
-      rights +
-      '</div>'
-    );
+    return '<div class="section-table">' + title + head + rows + '</div>';
   }
 
   function performanceTab(p) {
@@ -644,23 +897,39 @@
   }
 
   function campaignsTab(p) {
+    var cols = 'display:grid;grid-template-columns:1.5fr 1.7fr 1.5fr 1fr 0.8fr;gap:12px';
     var head =
-      '<div class="st-headrow" style="display:grid;grid-template-columns:1.4fr 1fr 1fr 0.8fr"><div>Campaign / Brand</div><div>Start</div><div>End</div><div>Status</div></div>';
+      '<div class="st-headrow" style="' + cols + '"><div>Campaign / Brand</div><div>Deliverables</div><div>Usage rights</div><div>Dates</div><div>Status</div></div>';
     var rows =
       p.contracts && p.contracts.length
         ? p.contracts
             .map(function (ct) {
+              var delivSub = [ct.platform, ct.numberOfDeliverables ? ct.numberOfDeliverables + ' deliverable' + (ct.numberOfDeliverables === 1 ? '' : 's') : null]
+                .filter(Boolean)
+                .join(' · ');
+              var rightsSub = ct.exclusivity && ct.exclusivity !== 'None' ? 'Exclusivity: ' + ct.exclusivity : '';
+              var due = ct.deadline || ct.end;
               return (
-                '<div class="st-row" style="display:grid;grid-template-columns:1.4fr 1fr 1fr 0.8fr">' +
+                '<div class="st-row" style="' + cols + '">' +
                 '<div><div style="font-weight:600">' +
                 esc(ct.campaign) +
                 '</div><div class="dim" style="font-size:12px">' +
                 esc(ct.brand) +
                 '</div></div>' +
-                '<div class="dim">' +
+                '<div><div>' +
+                esc(ct.deliverables || '—') +
+                '</div>' +
+                (delivSub ? '<div class="dim" style="font-size:12px">' + esc(delivSub) + '</div>' : '') +
+                '</div>' +
+                '<div><div>' +
+                esc(ct.usageRights || '—') +
+                '</div>' +
+                (rightsSub ? '<div class="dim" style="font-size:12px">' + esc(rightsSub) + '</div>' : '') +
+                '</div>' +
+                '<div class="dim"><div>' +
                 fmtMonth(ct.start) +
-                '</div><div class="dim">' +
-                fmtMonth(ct.end) +
+                '</div>' +
+                (due ? '<div style="font-size:12px">Due ' + fmtDate(due) + '</div>' : '') +
                 '</div>' +
                 '<div><span class="badge badge-sm" style="' +
                 statusStyle(ct.status) +
@@ -671,7 +940,7 @@
             })
             .join('')
         : '<div class="empty">No campaigns on record.</div>';
-    return '<div class="section-table"><div class="st-title">Campaign participation</div>' + head + rows + '</div>';
+    return '<div class="section-table"><div class="st-title">Campaigns · deliverables &amp; rights</div>' + head + rows + '</div>';
   }
 
   // ---- render + events ----------------------------------------------------
@@ -688,28 +957,69 @@
   }
 
   root.addEventListener('click', function (e) {
+    // Clicking the dimmed backdrop (but not the dialog) closes the modal.
+    if (e.target.classList && e.target.classList.contains('modal-overlay')) {
+      return setState({ modalContractId: null });
+    }
     var el = e.target.closest('[data-act]');
     if (!el) return;
     var act = el.getAttribute('data-act');
     if (act === 'theme') return toggleTheme();
+    if (act === 'usage') return setState({ usageFilter: el.getAttribute('data-usage') });
+    if (act === 'reveal-pay') {
+      return loadContractsFull(function () {
+        setState({ revealPay: true });
+      });
+    }
+    if (act === 'hide-pay') return setState({ revealPay: false });
+    if (act === 'view-contract') {
+      var idx = parseInt(el.getAttribute('data-idx'), 10) || 0;
+      return loadContractsFull(function () {
+        setState({ modalContractId: idx });
+      });
+    }
+    if (act === 'close-modal') return setState({ modalContractId: null });
+    // ---- inline edit of contact + payment ----
+    if (act === 'edit-contact') return setState({ editContact: true, saveError: null });
+    if (act === 'cancel-contact') return setState({ editContact: false, saveError: null });
+    if (act === 'save-contact') return saveContact();
+    if (act === 'edit-payment') {
+      // Needs the full payout details to seed the form.
+      return loadContractsFull(function () {
+        setState({ editPayment: true, revealPay: false, saveError: null });
+      });
+    }
+    if (act === 'cancel-payment') return setState({ editPayment: false, saveError: null });
+    if (act === 'save-payment') return savePayment();
     if (act === 'signout') {
       fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(function () {});
       setState({ view: 'login', username: '', password: '', selectedId: null, expandedId: null });
       return;
     }
-    if (act === 'usage') return setState({ usageFilter: el.getAttribute('data-usage') });
     if (act === 'toggle') {
       var id = el.getAttribute('data-id');
       return setState({ expandedId: state.expandedId === id ? null : id });
     }
     if (act === 'open') {
       state.selectedId = el.getAttribute('data-id');
-      state.activeTab = 'overview';
+      state.activeTab = 'performance';
       loadProfile(state.selectedId);
       return;
     }
     if (act === 'back') return setState({ selectedId: null, profile: null });
-    if (act === 'tab') return setState({ activeTab: el.getAttribute('data-tab') });
+    if (act === 'tab') {
+      return setState({
+        activeTab: el.getAttribute('data-tab'),
+        editContact: false,
+        editPayment: false,
+        saveError: null,
+      });
+    }
+  });
+
+  // Escape closes the signed-contract modal.
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && state.modalContractId !== null) setState({ modalContractId: null });
   });
 
   root.addEventListener('submit', function (e) {
@@ -763,8 +1073,7 @@
           !q ||
           (c.name && c.name.toLowerCase().indexOf(q) >= 0) ||
           (c.handle && c.handle.toLowerCase().indexOf(q) >= 0);
-        var mu = matchesUsage(c);
-        return mq && mu;
+        return mq && matchesUsage(c);
       });
       var tbl = root.querySelector('.table');
       var sub = root.querySelector('.page-sub');

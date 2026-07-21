@@ -390,7 +390,7 @@ button {
 }
 .roster-grid {
   display: grid;
-  grid-template-columns: 2.2fr 1fr 0.9fr 1fr 0.8fr 0.9fr 0.9fr 40px;
+  grid-template-columns: 2.2fr 1fr 0.9fr 1fr 0.8fr 0.9fr 40px;
   align-items: center;
 }
 .roster-head {
@@ -740,9 +740,157 @@ button {
   }
 }
 
+/* ---- Reveal link + clickable rows -------------------------------------- */
+.linklike {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.linklike:hover {
+  opacity: 0.7;
+}
+.edit-input {
+  width: 100%;
+  height: 38px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-alt);
+  color: var(--text);
+  padding: 0 12px;
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+}
+.edit-input:focus {
+  border-color: var(--text-faint);
+}
+.save-err {
+  margin-top: 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #dc2626;
+}
+.st-row-click:hover {
+  background: var(--surface-alt);
+}
+
+/* ---- Modal (signed contract viewer) ------------------------------------ */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 48px 20px;
+  overflow-y: auto;
+  animation: fadeIn 0.15s ease;
+}
+.modal {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  width: 100%;
+  max-width: 720px;
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 24px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.modal-x {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 16px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 4px;
+}
+.modal-x:hover {
+  color: var(--text);
+}
+.modal-body {
+  padding: 22px 24px 26px;
+  overflow-y: auto;
+}
+.msec {
+  margin-bottom: 22px;
+}
+.msec:last-child {
+  margin-bottom: 0;
+}
+.msec-t {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-faint);
+  margin-bottom: 10px;
+}
+.mrow {
+  display: grid;
+  grid-template-columns: 190px 1fr;
+  gap: 12px 16px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13.5px;
+}
+.mrow:last-child {
+  border-bottom: 0;
+}
+.mk {
+  color: var(--text-muted);
+}
+.mv {
+  color: var(--text);
+  font-weight: 500;
+  word-break: break-word;
+}
+/* Signatures are dark strokes on a transparent PNG — keep a white plate so
+   they're always visible, including in dark mode. */
+.sig-box {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 90px;
+}
+.sig-img {
+  max-width: 100%;
+  max-height: 200px;
+  object-fit: contain;
+}
+@media (max-width: 560px) {
+  .mrow {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+}
+
 @media (max-width: 720px) {
   .roster-grid {
-    grid-template-columns: 2fr 0.8fr 0.9fr 40px;
+    grid-template-columns: 2fr 0.9fr 40px;
   }
   .roster-grid .hide-sm {
     display: none;
