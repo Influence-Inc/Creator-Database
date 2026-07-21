@@ -19,6 +19,7 @@
     loginError: false,
     loggingIn: false,
     search: '',
+    usageFilter: 'Used', // Used (default) | Unused | All
     expandedId: null,
     selectedId: null,
     activeTab: 'performance',
@@ -81,14 +82,41 @@
   // New-vs-returning chip. "Returning" = the creator has 2+ campaigns on record;
   // "New" = a single campaign so far. Purely informational (who's worked with us
   // before), computed server-side in the /roster read-model.
+  // Used-vs-unused chip. "Used" = the creator has signed a contract for at least
+  // one campaign; "Unused" = has never signed one. Computed server-side in the
+  // /roster read-model (segment: 'used' | 'unused').
   function segChip(c) {
-    if (c.segment !== 'returning' && c.segment !== 'new') return '';
-    var label = c.segment === 'returning' ? 'Returning' : 'New';
+    if (c.segment !== 'used' && c.segment !== 'unused') return '';
+    var label = c.segment === 'used' ? 'Used' : 'Unused';
+    var n = c.signedContracts || 0;
     var title =
-      c.segment === 'returning'
-        ? 'Returning creator — ' + (c.campaignCount || 2) + ' campaigns on record'
-        : 'New creator — first campaign on record';
+      c.segment === 'used'
+        ? 'Used creator — signed ' + n + ' contract' + (n === 1 ? '' : 's')
+        : 'Unused creator — no signed contract yet';
     return '<span class="seg-chip ' + c.segment + '" title="' + esc(title) + '">' + label + '</span>';
+  }
+
+  // Used/Unused roster filter. "Used" is the default so the roster leads with
+  // creators we've actually worked with (signed a contract).
+  function matchesUsage(c) {
+    if (state.usageFilter === 'All') return true;
+    if (state.usageFilter === 'Unused') return c.segment === 'unused';
+    return c.segment === 'used';
+  }
+  function usageChips() {
+    return ['Used', 'Unused', 'All']
+      .map(function (r) {
+        return (
+          '<button class="chip' +
+          (state.usageFilter === r ? ' active' : '') +
+          '" data-act="usage" data-usage="' +
+          r +
+          '">' +
+          r +
+          '</button>'
+        );
+      })
+      .join('');
   }
   function statusStyle(status) {
     var map = { Active: 'active', Completed: 'completed', Pending: 'pending' };
@@ -360,11 +388,11 @@
     } else {
       var q = state.search.trim().toLowerCase();
       var list = data.creators.filter(function (c) {
-        return (
+        var mq =
           !q ||
           (c.name && c.name.toLowerCase().indexOf(q) >= 0) ||
-          (c.handle && c.handle.toLowerCase().indexOf(q) >= 0)
-        );
+          (c.handle && c.handle.toLowerCase().indexOf(q) >= 0);
+        return mq && matchesUsage(c);
       });
       var countLabel = list.length + ' of ' + data.total + ' creators';
 
@@ -391,6 +419,7 @@
         '<div class="search"><span>⚲</span><input id="search" type="text" placeholder="Search name or @handle" value="' +
         esc(state.search) +
         '"></div>' +
+        usageChips() +
         '</div></div>' +
         '<div class="table">' +
         '<div class="roster-grid roster-head"><div>Creator</div><div class="hide-sm">Platforms</div><div class="hide-sm">Campaigns</div><div>Total views</div><div class="hide-sm">CPM</div><div class="hide-sm">Engagement</div><div></div></div>' +
@@ -936,6 +965,7 @@
     if (!el) return;
     var act = el.getAttribute('data-act');
     if (act === 'theme') return toggleTheme();
+    if (act === 'usage') return setState({ usageFilter: el.getAttribute('data-usage') });
     if (act === 'reveal-pay') {
       return loadContractsFull(function () {
         setState({ revealPay: true });
@@ -1039,11 +1069,11 @@
       // Re-render only the rows + count, keeping the input focused.
       var q = state.search.trim().toLowerCase();
       var list = data.creators.filter(function (c) {
-        return (
+        var mq =
           !q ||
           (c.name && c.name.toLowerCase().indexOf(q) >= 0) ||
-          (c.handle && c.handle.toLowerCase().indexOf(q) >= 0)
-        );
+          (c.handle && c.handle.toLowerCase().indexOf(q) >= 0);
+        return mq && matchesUsage(c);
       });
       var tbl = root.querySelector('.table');
       var sub = root.querySelector('.page-sub');
