@@ -5,6 +5,11 @@ import { QueryCreatorsDto } from './dto/query-creators.dto';
 
 type Db = PrismaService | Prisma.TransactionClient;
 
+/** A Creator row plus a `contractsCount` derived from the Prisma `_count`.
+ *  Used by search results and the categorize endpoint so the caller can render
+ *  the Used/Unused badge without a second round-trip. */
+export type CreatorWithContractCount = Creator & { contractsCount: number };
+
 /**
  * Data-access layer for creators. Holds all Prisma queries so services stay
  * focused on business logic (merge rules, validation, orchestration).
@@ -67,24 +72,63 @@ export class CreatorsRepository {
   /**
    * Paginated, filtered, sorted search. Returns the page of rows and the total
    * matching count in a single transaction so `meta.total` is consistent.
+   * Each row carries `contractsCount` so the caller can render the Used/Unused
+   * badge without a second round-trip.
    */
-  async search(query: QueryCreatorsDto): Promise<{ data: Creator[]; total: number }> {
+  async search(query: QueryCreatorsDto): Promise<{ data: CreatorWithContractCount[]; total: number }> {
     const where = this.buildWhere(query);
     const orderBy: Prisma.CreatorOrderByWithRelationInput = {
       [query.sortBy]: query.sortOrder,
     };
 
-    const [data, total] = await this.prisma.$transaction([
+    const [rows, total] = await this.prisma.$transaction([
       this.prisma.creator.findMany({
         where,
         orderBy,
         skip: query.skip,
         take: query.limit,
+        include: { _count: { select: { contracts: true } } },
       }),
       this.prisma.creator.count({ where }),
     ]);
 
+    const data: CreatorWithContractCount[] = rows.map((r) => {
+      const { _count, ...creator } = r as typeof r & { _count: { contracts: number } };
+      return { ...creator, contractsCount: _count.contracts };
+    });
     return { data, total };
+  }
+
+  /**
+   * Bulk-fetch the master rows for a batch of {email, instagramUsername} keys.
+   * Returns each match with its `contractsCount` so the caller can classify
+   * them as Used (≥1 contract) or Unused (0 contracts) in one query. Empty
+   * strings are skipped — the caller has already normalized the inputs.
+   */
+  async findByIdentityKeys(
+    keys: { email?: string | null; instagramUsername?: string | null }[],
+    db: Db = this.prisma,
+  ): Promise<CreatorWithContractCount[]> {
+    const emailSet = new Set<string>();
+    const igSet = new Set<string>();
+    for (const k of keys) {
+      if (k.email) emailSet.add(k.email);
+      if (k.instagramUsername) igSet.add(k.instagramUsername);
+    }
+    if (!emailSet.size && !igSet.size) return [];
+
+    const or: Prisma.CreatorWhereInput[] = [];
+    if (emailSet.size) or.push({ email: { in: [...emailSet] } });
+    if (igSet.size) or.push({ instagramUsername: { in: [...igSet] } });
+
+    const rows = await db.creator.findMany({
+      where: { OR: or },
+      include: { _count: { select: { contracts: true } } },
+    });
+    return rows.map((r) => {
+      const { _count, ...creator } = r as typeof r & { _count: { contracts: number } };
+      return { ...creator, contractsCount: _count.contracts };
+    });
   }
 
   /** Translate the query DTO into a Prisma `where` clause. */
@@ -119,6 +163,12 @@ export class CreatorsRepository {
     if (query.email) {
       and.push({ email: { contains: query.email, mode: 'insensitive' } });
     }
+
+    // Contract-count category: 'used' = at least one contract row, 'unused' =
+    // no contract rows. Prisma's `some` / `none` filters compile to a JOIN + a
+    // NOT EXISTS respectively, so both are index-friendly against contracts(creatorId).
+    if (query.category === 'used') and.push({ contracts: { some: {} } });
+    else if (query.category === 'unused') and.push({ contracts: { none: {} } });
 
     return and.length > 0 ? { AND: and } : {};
   }

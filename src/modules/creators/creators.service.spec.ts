@@ -186,3 +186,86 @@ describe('CreatorsService.upsertFromSource (merge logic)', () => {
     expect(repo.update).not.toHaveBeenCalled();
   });
 });
+
+// -----------------------------------------------------------------------------
+// categorize — bulk classification (used / unused / new) for the Deal Studio
+// badges. Backed by one repo call (findByIdentityKeys) and pure mapping logic.
+// -----------------------------------------------------------------------------
+
+describe('CreatorsService.categorize', () => {
+  let service: CreatorsService;
+  let repo: jest.Mocked<Pick<CreatorsRepository, 'findByIdentityKeys'>>;
+
+  beforeEach(() => {
+    repo = { findByIdentityKeys: jest.fn() } as unknown as typeof repo;
+    const prisma = {} as unknown as PrismaService;
+    const activityLog = {} as unknown as ActivityLogService;
+    service = new CreatorsService(prisma, repo as unknown as CreatorsRepository, activityLog);
+  });
+
+  it('classifies a matched creator with contracts as used, no contracts as unused', async () => {
+    repo.findByIdentityKeys.mockResolvedValue([
+      { ...makeCreator({ id: 'c1', email: 'used@example.com' }), contractsCount: 2 },
+      { ...makeCreator({ id: 'c2', instagramUsername: 'unused_ig' }), contractsCount: 0 },
+    ]);
+
+    const out = await service.categorize({
+      keys: [
+        { email: 'used@example.com' },
+        { instagramUsername: 'unused_ig' },
+      ],
+    });
+
+    expect(out[0].category).toBe('used');
+    expect(out[0].creator?.contractsCount).toBe(2);
+    expect(out[1].category).toBe('unused');
+    expect(out[1].creator?.contractsCount).toBe(0);
+  });
+
+  it('returns new for keys that do not match any creator', async () => {
+    repo.findByIdentityKeys.mockResolvedValue([]);
+    const out = await service.categorize({ keys: [{ email: 'nobody@example.com' }] });
+    expect(out[0].category).toBe('new');
+    expect(out[0].creator).toBeNull();
+  });
+
+  it('normalizes emails (case + trim) and IG handles (@, URL) before matching', async () => {
+    // The repo is called with normalized keys; verify each recognizable shape
+    // collapses to the canonical form the master record is stored under.
+    repo.findByIdentityKeys.mockResolvedValue([
+      { ...makeCreator({ id: 'c1', email: 'alex@example.com', instagramUsername: 'alexcreates' }), contractsCount: 1 },
+    ]);
+
+    await service.categorize({
+      keys: [
+        { email: '  Alex@Example.COM ' },
+        { instagramUsername: '@AlexCreates' },
+        { instagramUsername: 'https://www.instagram.com/AlexCreates/' },
+      ],
+    });
+
+    const args = repo.findByIdentityKeys.mock.calls[0][0] as {
+      email: string | null;
+      instagramUsername: string | null;
+    }[];
+    expect(args[0].email).toBe('alex@example.com');
+    expect(args[1].instagramUsername).toBe('alexcreates');
+    expect(args[2].instagramUsername).toBe('alexcreates');
+  });
+
+  it('preserves input order — response is positional', async () => {
+    // Different keys in the response's order (not the DB's) — the caller
+    // relies on this to line the result up with its own array.
+    repo.findByIdentityKeys.mockResolvedValue([
+      { ...makeCreator({ id: 'c1', email: 'a@x.com' }), contractsCount: 3 },
+    ]);
+    const out = await service.categorize({
+      keys: [
+        { email: 'nobody@x.com' },
+        { email: 'a@x.com' },
+        { email: 'another@x.com' },
+      ],
+    });
+    expect(out.map((r) => r.category)).toEqual(['new', 'used', 'new']);
+  });
+});

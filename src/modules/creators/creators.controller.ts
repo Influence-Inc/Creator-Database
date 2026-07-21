@@ -11,6 +11,7 @@ import {
   Query,
 } from '@nestjs/common';
 import { CreatorsService } from './creators.service';
+import { CategorizeCreatorsDto } from './dto/categorize-creators.dto';
 import { CreateCreatorDto } from './dto/create-creator.dto';
 import { ParticipationQueryDto } from './dto/participation-query.dto';
 import { QueryCreatorsDto } from './dto/query-creators.dto';
@@ -20,11 +21,12 @@ import { UpdateCreatorDto } from './dto/update-creator.dto';
  * Creator REST endpoints. Controllers stay thin — they validate/parse the
  * request (via DTOs + the global ValidationPipe) and delegate to the service.
  *
- *   GET   /creators            list (search / filter / sort / paginate)
- *   POST  /creators            manual create-or-merge
- *   GET   /creator/:id         fetch one
- *   PATCH /creator/:id         manual update
- *   GET   /creator/:id/activity   audit trail
+ *   GET   /creators              list (search / filter / sort / paginate)
+ *   POST  /creators              manual create-or-merge
+ *   POST  /creators/categorize   bulk classify a batch as used / unused / new
+ *   GET   /creator/:id           fetch one
+ *   PATCH /creator/:id           manual update
+ *   GET   /creator/:id/activity  audit trail
  */
 @Controller()
 export class CreatorsController {
@@ -52,6 +54,20 @@ export class CreatorsController {
   @HttpCode(HttpStatus.OK)
   checkParticipation(@Body() dto: ParticipationQueryDto) {
     return this.creatorsService.checkParticipation(dto);
+  }
+
+  /**
+   * Used / Unused / New classification for the Outreach Deal Studio badges.
+   * A batch of {email?, instagramUsername?} keys returns each key's category —
+   * 'used' (has ≥1 contract row), 'unused' (in DB, no contracts), 'new' (not
+   * in DB) — plus the master record for used/unused so the dashboard can render
+   * "N past contracts" tooltips without a second call. Same POST+API-key model
+   * as /creators/participation above.
+   */
+  @Post('creators/categorize')
+  @HttpCode(HttpStatus.OK)
+  categorize(@Body() dto: CategorizeCreatorsDto) {
+    return this.creatorsService.categorize(dto);
   }
 
   @Get('creator/:id')
