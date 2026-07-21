@@ -124,36 +124,28 @@ export class RosterService {
       statsByCreator.set(s.creatorId, e);
     }
 
+    // Track signed contracts per creator. "Used" = the creator has signed a
+    // contract for at least one campaign (status SIGNED or COMPLETED); everyone
+    // else — including creators with only unsigned/pending contracts or none at
+    // all — is "Unused". Ingested contracts default to COMPLETED.
     const contractsByCreator = new Map<
       string,
-      { active: number; signature: boolean; lastCampaign: string | null }
+      { active: number; signed: number; signature: boolean; lastCampaign: string | null }
     >();
     for (const ct of contracts) {
       const e =
-        contractsByCreator.get(ct.creatorId) ?? { active: 0, signature: false, lastCampaign: null };
+        contractsByCreator.get(ct.creatorId) ?? {
+          active: 0,
+          signed: 0,
+          signature: false,
+          lastCampaign: null,
+        };
       if (ct.status === 'SIGNED') e.active += 1;
+      if (ct.status === 'SIGNED' || ct.status === 'COMPLETED') e.signed += 1;
       if (ct.signatureImage) e.signature = true;
       if (!e.lastCampaign && ct.campaignName) e.lastCampaign = ct.campaignName; // rows are newest-first
       contractsByCreator.set(ct.creatorId, e);
     }
-
-    // Distinct campaigns a creator has been part of, drawn from every source
-    // that names one (master record + stats snapshots + contracts). Drives the
-    // new-vs-returning chip: 2+ distinct campaigns = returning, else new.
-    const campaignsByCreator = new Map<string, Set<string>>();
-    const addCampaign = (creatorId: string, name: string | null | undefined): void => {
-      const key = (name ?? '').trim().toLowerCase();
-      if (!key) return;
-      let set = campaignsByCreator.get(creatorId);
-      if (!set) {
-        set = new Set<string>();
-        campaignsByCreator.set(creatorId, set);
-      }
-      set.add(key);
-    };
-    for (const c of creators) addCampaign(c.id, c.campaignName);
-    for (const s of stats) addCampaign(s.creatorId, s.campaignName);
-    for (const ct of contracts) addCampaign(ct.creatorId, ct.campaignName);
 
     const order = ['IG', 'TT', 'YT'];
     const mapped = creators.map((c) => {
@@ -161,7 +153,7 @@ export class RosterService {
       const ct = contractsByCreator.get(c.id);
       const platforms = st ? order.filter((code) => st.platforms.has(code)) : [];
       const name = this.displayName(c);
-      const campaignCount = campaignsByCreator.get(c.id)?.size ?? 0;
+      const signedContracts = ct?.signed ?? 0;
       return {
         id: c.id,
         name,
@@ -169,8 +161,8 @@ export class RosterService {
         initials: this.initials(name),
         platforms,
         campaigns: st?.count ?? 0,
-        campaignCount,
-        segment: campaignCount >= 2 ? 'returning' : 'new',
+        signedContracts,
+        segment: signedContracts >= 1 ? 'used' : 'unused',
         views: st?.views ?? c.averageViews ?? 0,
         cpm: c.cpm,
         engagement: this.engagementPct(c.engagementRate),

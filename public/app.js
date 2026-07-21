@@ -19,7 +19,7 @@
     loginError: false,
     loggingIn: false,
     search: '',
-    riskFilter: 'All',
+    usageFilter: 'Used', // Used (default) | Unused | All
     expandedId: null,
     selectedId: null,
     activeTab: 'overview',
@@ -79,17 +79,26 @@
     return 'background:var(--risk-' + k + '-bg);color:var(--risk-' + k + '-fg)';
   }
 
-  // New-vs-returning chip. "Returning" = the creator has 2+ campaigns on record;
-  // "New" = a single campaign so far. Purely informational (who's worked with us
-  // before), computed server-side in the /roster read-model.
+  // Used-vs-unused chip. "Used" = the creator has signed a contract for at least
+  // one campaign; "Unused" = has never signed one. Computed server-side in the
+  // /roster read-model (segment: 'used' | 'unused').
   function segChip(c) {
-    if (c.segment !== 'returning' && c.segment !== 'new') return '';
-    var label = c.segment === 'returning' ? 'Returning' : 'New';
+    if (c.segment !== 'used' && c.segment !== 'unused') return '';
+    var label = c.segment === 'used' ? 'Used' : 'Unused';
+    var n = c.signedContracts || 0;
     var title =
-      c.segment === 'returning'
-        ? 'Returning creator — ' + (c.campaignCount || 2) + ' campaigns on record'
-        : 'New creator — first campaign on record';
+      c.segment === 'used'
+        ? 'Used creator — signed ' + n + ' contract' + (n === 1 ? '' : 's')
+        : 'Unused creator — no signed contract yet';
     return '<span class="seg-chip ' + c.segment + '" title="' + esc(title) + '">' + label + '</span>';
+  }
+
+  // Used/Unused roster filter (replaces the old risk filter). "Used" is the
+  // default so the roster leads with creators we've actually worked with.
+  function matchesUsage(c) {
+    if (state.usageFilter === 'All') return true;
+    if (state.usageFilter === 'Unused') return c.segment === 'unused';
+    return c.segment === 'used';
   }
   function statusStyle(status) {
     var map = { Active: 'active', Completed: 'completed', Pending: 'pending' };
@@ -233,8 +242,8 @@
           !q ||
           (c.name && c.name.toLowerCase().indexOf(q) >= 0) ||
           (c.handle && c.handle.toLowerCase().indexOf(q) >= 0);
-        var mr = state.riskFilter === 'All' || c.risk === state.riskFilter;
-        return mq && mr;
+        var mu = matchesUsage(c);
+        return mq && mu;
       });
       var countLabel = list.length + ' of ' + data.total + ' creators';
 
@@ -252,12 +261,12 @@
         rows = list.map(rosterRow).join('');
       }
 
-      var chips = ['All', 'Low', 'Med', 'High']
+      var chips = ['Used', 'Unused', 'All']
         .map(function (r) {
           return (
             '<button class="chip' +
-            (state.riskFilter === r ? ' active' : '') +
-            '" data-act="risk" data-risk="' +
+            (state.usageFilter === r ? ' active' : '') +
+            '" data-act="usage" data-usage="' +
             r +
             '">' +
             r +
@@ -688,7 +697,7 @@
       setState({ view: 'login', username: '', password: '', selectedId: null, expandedId: null });
       return;
     }
-    if (act === 'risk') return setState({ riskFilter: el.getAttribute('data-risk') });
+    if (act === 'usage') return setState({ usageFilter: el.getAttribute('data-usage') });
     if (act === 'toggle') {
       var id = el.getAttribute('data-id');
       return setState({ expandedId: state.expandedId === id ? null : id });
@@ -754,8 +763,8 @@
           !q ||
           (c.name && c.name.toLowerCase().indexOf(q) >= 0) ||
           (c.handle && c.handle.toLowerCase().indexOf(q) >= 0);
-        var mr = state.riskFilter === 'All' || c.risk === state.riskFilter;
-        return mq && mr;
+        var mu = matchesUsage(c);
+        return mq && mu;
       });
       var tbl = root.querySelector('.table');
       var sub = root.querySelector('.page-sub');

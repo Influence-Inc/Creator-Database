@@ -767,5 +767,5 @@ button {
   line-height: 1.5;
   white-space: nowrap;
 }
-.seg-chip.returning { background: var(--risk-low-bg); color: var(--risk-low-fg); }
-.seg-chip.new { background: var(--surface-alt); color: var(--text-muted); border-color: var(--border); }
+.seg-chip.used { background: var(--risk-low-bg); color: var(--risk-low-fg); }
+.seg-chip.unused { background: var(--surface-alt); color: var(--text-muted); border-color: var(--border); }
