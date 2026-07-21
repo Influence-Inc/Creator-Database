@@ -19,10 +19,14 @@
     loginError: false,
     loggingIn: false,
     search: '',
-    riskFilter: 'All',
     expandedId: null,
     selectedId: null,
-    activeTab: 'overview',
+    activeTab: 'performance',
+    // Inline edit state for the Contact & Payment cards.
+    editContact: false,
+    editPayment: false,
+    saving: false,
+    saveError: null,
     roster: null, // {creators, total} | null (loading)
     rosterError: false,
     profile: null,
@@ -74,17 +78,6 @@
     if (isNaN(d.getTime())) return '—';
     return d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
   }
-  function riskClass(risk) {
-    if (risk === 'Low') return 'low';
-    if (risk === 'Med') return 'med';
-    if (risk === 'High') return 'high';
-    return 'pending';
-  }
-  function riskStyle(risk) {
-    var k = riskClass(risk);
-    return 'background:var(--risk-' + k + '-bg);color:var(--risk-' + k + '-fg)';
-  }
-
   // New-vs-returning chip. "Returning" = the creator has 2+ campaigns on record;
   // "New" = a single campaign so far. Purely informational (who's worked with us
   // before), computed server-side in the /roster read-model.
@@ -194,6 +187,103 @@
       });
   }
 
+  // ---- inline editing (contact + payout details) --------------------------
+  function fieldVal(id) {
+    var el = document.getElementById(id);
+    return el ? el.value : '';
+  }
+
+  // PATCH the edited details to the API, then refresh the profile in place.
+  // `onSuccess` runs after the profile is replaced (e.g. to leave edit mode).
+  function saveDetails(body, onSuccess) {
+    state.saving = true;
+    state.saveError = null;
+    render();
+    fetch('/roster/' + encodeURIComponent(state.selectedId) + '/details', {
+      method: 'PATCH',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+      .then(function (r) {
+        if (r.status === 401) {
+          state.view = 'login';
+          state.selectedId = null;
+          throw new Error('unauthorized');
+        }
+        return r.json().then(function (j) {
+          return { ok: r.ok, j: j };
+        });
+      })
+      .then(function (res) {
+        if (!res.ok) {
+          var m = res.j && res.j.message;
+          throw new Error(Array.isArray(m) ? m.join(', ') : m || 'Save failed');
+        }
+        state.profile = res.j;
+        state.contractsFull = null; // force a re-fetch of the unredacted view
+        state.saving = false;
+        state.saveError = null;
+        onSuccess();
+      })
+      .catch(function (err) {
+        state.saving = false;
+        if (err && err.message === 'unauthorized') {
+          render();
+          return;
+        }
+        state.saveError = (err && err.message) || 'Save failed';
+        render();
+      });
+  }
+
+  function saveContact() {
+    if (state.saving) return;
+    saveDetails(
+      {
+        contact: {
+          email: fieldVal('ec-email'),
+          phone: fieldVal('ec-phone'),
+          address: {
+            line1: fieldVal('ec-line1'),
+            line2: fieldVal('ec-line2'),
+            city: fieldVal('ec-city'),
+            state: fieldVal('ec-state'),
+            postalCode: fieldVal('ec-zip'),
+            country: fieldVal('ec-country'),
+          },
+        },
+      },
+      function () {
+        state.editContact = false;
+        render();
+      },
+    );
+  }
+
+  function savePayment() {
+    if (state.saving) return;
+    saveDetails(
+      {
+        payment: {
+          accountHolderName: fieldVal('ep-holder'),
+          bankName: fieldVal('ep-bank'),
+          accountNumber: fieldVal('ep-acct'),
+          iban: fieldVal('ep-iban'),
+          routingNumber: fieldVal('ep-routing'),
+          ifscCode: fieldVal('ep-ifsc'),
+          swiftCode: fieldVal('ep-swift'),
+          panNumber: fieldVal('ep-pan'),
+          taxIdNumber: fieldVal('ep-taxid'),
+        },
+      },
+      function () {
+        state.editPayment = false;
+        render();
+      },
+    );
+  }
+
   // ---- theme --------------------------------------------------------------
   function currentTheme() {
     return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
@@ -270,12 +360,11 @@
     } else {
       var q = state.search.trim().toLowerCase();
       var list = data.creators.filter(function (c) {
-        var mq =
+        return (
           !q ||
           (c.name && c.name.toLowerCase().indexOf(q) >= 0) ||
-          (c.handle && c.handle.toLowerCase().indexOf(q) >= 0);
-        var mr = state.riskFilter === 'All' || c.risk === state.riskFilter;
-        return mq && mr;
+          (c.handle && c.handle.toLowerCase().indexOf(q) >= 0)
+        );
       });
       var countLabel = list.length + ' of ' + data.total + ' creators';
 
@@ -293,20 +382,6 @@
         rows = list.map(rosterRow).join('');
       }
 
-      var chips = ['All', 'Low', 'Med', 'High']
-        .map(function (r) {
-          return (
-            '<button class="chip' +
-            (state.riskFilter === r ? ' active' : '') +
-            '" data-act="risk" data-risk="' +
-            r +
-            '">' +
-            r +
-            '</button>'
-          );
-        })
-        .join('');
-
       body =
         '<div class="page-head">' +
         '<div><div class="page-title">Creator roster</div><div class="page-sub">' +
@@ -316,10 +391,9 @@
         '<div class="search"><span>⚲</span><input id="search" type="text" placeholder="Search name or @handle" value="' +
         esc(state.search) +
         '"></div>' +
-        chips +
         '</div></div>' +
         '<div class="table">' +
-        '<div class="roster-grid roster-head"><div>Creator</div><div class="hide-sm">Platforms</div><div class="hide-sm">Campaigns</div><div>Total views</div><div class="hide-sm">CPM</div><div class="hide-sm">Engagement</div><div>Risk</div><div></div></div>' +
+        '<div class="roster-grid roster-head"><div>Creator</div><div class="hide-sm">Platforms</div><div class="hide-sm">Campaigns</div><div>Total views</div><div class="hide-sm">CPM</div><div class="hide-sm">Engagement</div><div></div></div>' +
         rows +
         '</div>';
     }
@@ -335,8 +409,6 @@
       .join('');
     var detail = expanded
       ? '<div class="row-detail fade">' +
-        kv('Followers', fmtNum(c.followers)) +
-        kv('Signature on file', c.signature ? 'On file' : 'Missing') +
         kv('Active contracts', String(c.activeContracts)) +
         kv('Last campaign', esc(c.lastCampaign || '—')) +
         '<button class="btn-accent" style="margin-left:auto" data-act="open" data-id="' +
@@ -374,11 +446,6 @@
       '<div class="cell hide-sm">' +
       fmtPct(c.engagement) +
       '</div>' +
-      '<div><span class="badge" style="' +
-      riskStyle(c.risk) +
-      '">' +
-      esc(c.risk || '—') +
-      '</span></div>' +
       '<div class="chev' +
       (expanded ? ' open' : '') +
       '">›</div>' +
@@ -394,10 +461,8 @@
 
   // ---- profile ------------------------------------------------------------
   var TAB_DEFS = [
-    { key: 'overview', label: 'Overview' },
-    { key: 'contract', label: 'Contract & Legal' },
-    { key: 'deliverables', label: 'Deliverables & Rights' },
     { key: 'performance', label: 'Performance' },
+    { key: 'contract', label: 'Contract & Legal' },
     { key: 'campaigns', label: 'Campaigns' },
   ];
 
@@ -518,18 +583,13 @@
       esc(p.initials) +
       '</div>' +
       '<div style="flex:1;min-width:200px">' +
-      '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><div class="hero-name">' +
+      '<div class="hero-name">' +
       esc(p.name) +
-      '</div><span class="badge" style="' +
-      riskStyle(p.risk) +
-      '">' +
-      esc(p.risk || '—') +
-      ' risk</span></div>' +
+      '</div>' +
       '<div class="creator-handle mono" style="margin-top:3px">' +
       esc(p.handle) +
       '</div></div>' +
       '<div class="hero-stats">' +
-      stat('Followers', fmtNum(p.followers)) +
       stat('Total views', fmtNum(p.views)) +
       stat('CPM', fmtCpm(p.cpm)) +
       stat('Campaigns', String(p.campaigns)) +
@@ -560,16 +620,12 @@
 
   function tabContent(p) {
     switch (state.activeTab) {
-      case 'contract':
-        return contractTab(p);
-      case 'deliverables':
-        return deliverablesTab(p);
-      case 'performance':
-        return performanceTab(p);
       case 'campaigns':
         return campaignsTab(p);
+      case 'performance':
+        return performanceTab(p);
       default:
-        return overviewTab(p);
+        return contractTab(p);
     }
   }
 
@@ -598,105 +654,153 @@
       .join('');
   }
 
-  function overviewTab(p) {
-    var ra = p.riskAssessment || { note: '—', factors: {} };
-    return (
-      '<div class="grid-2">' +
-      '<div class="card"><div class="card-title">Platform performance</div>' +
-      bars(p.platformBreakdown, function (pf) {
-        return fmtNum(pf.views) + ' views · ' + fmtPct(pf.engagement) + ' eng.';
-      }) +
-      '</div>' +
-      '<div class="card"><div class="card-title">Risk assessment</div>' +
-      '<div class="dim" style="font-size:13px;line-height:1.7">' +
-      esc(ra.note) +
-      '</div>' +
-      '<div style="margin-top:18px;display:flex;flex-direction:column;gap:10px">' +
-      riskFactor('Content compliance', ra.factors.compliance) +
-      riskFactor('Payment / tax', ra.factors.payment) +
-      riskFactor('Delivery reliability', ra.factors.delivery) +
-      '</div></div>' +
-      '</div>'
-    );
-  }
-  function riskFactor(lbl, val) {
-    return (
-      '<div class="risk-factor"><span class="lbl">' +
-      esc(lbl) +
-      '</span><span class="val">' +
-      esc(val || '—') +
-      '</span></div>'
-    );
-  }
-
   function contractTab(p) {
-    var ct = p.contact || {};
-    var pay = p.payment || {};
-    var sigLine = ct.signature
-      ? 'Signed · ' + fmtDate(ct.signedDate)
-      : 'Missing';
-    var contactCard =
-      '<div class="card"><div class="card-title">Contact &amp; identity</div><div class="detail-list">' +
-      dl('Registered address', esc(ct.address || '—')) +
-      dl('Phone', '<span class="mono">' + esc(ct.phone || '—') + '</span>') +
-      dl('Email', '<span class="mono">' + esc(ct.email || '—') + '</span>') +
-      dl(
-        'Signature on file',
-        '<span style="display:inline-flex;align-items:center;gap:8px"><span style="width:8px;height:8px;border-radius:50%;background:var(--risk-' +
-          (ct.signature ? 'low' : 'high') +
-          '-fg)"></span>' +
-          esc(sigLine) +
-          '</span>'
-      ) +
-      '</div></div>';
     return (
       '<div class="grid-2">' +
-      contactCard +
-      paymentCard(pay) +
+      contactCard(p) +
+      paymentCard(p) +
       '<div style="grid-column:1/-1">' +
       contractHistory(p.contracts) +
       '</div></div>'
     );
   }
 
-  // Payment account card. Masked by default; the admin can reveal the full
-  // account/IBAN (fetched on demand) for payment processing.
-  function paymentCard(pay) {
-    var full =
-      state.revealPay && state.contractsFull && state.contractsFull.length
-        ? state.contractsFull[0].payment || {}
-        : null;
+  // Small input used inside the editable cards.
+  function editInput(id, value, placeholder) {
+    return (
+      '<input class="edit-input" id="' +
+      id +
+      '" value="' +
+      esc(value || '') +
+      '" placeholder="' +
+      esc(placeholder || '') +
+      '">'
+    );
+  }
+  function cardTitleBar(label, editing, editAct, saveAct, cancelAct) {
+    var right = editing
+      ? '<span style="display:flex;gap:14px">' +
+        '<button class="linklike" data-act="' + cancelAct + '"' + (state.saving ? ' disabled' : '') + '>Cancel</button>' +
+        '<button class="linklike" data-act="' + saveAct + '"' + (state.saving ? ' disabled' : '') + '>' +
+        (state.saving ? 'Saving…' : 'Save') +
+        '</button></span>'
+      : '<button class="linklike" data-act="' + editAct + '">Edit</button>';
+    return (
+      '<div class="card-title" style="display:flex;justify-content:space-between;align-items:center">' +
+      label +
+      right +
+      '</div>'
+    );
+  }
+
+  function contactCard(p) {
+    var ct = p.contact || {};
+    var af = ct.addressFields || {};
     var body;
-    if (full) {
-      var rows =
-        dl('Account holder', esc(full.accountHolderName || pay.accountHolder || '—')) +
-        (full.bankName ? dl('Bank name', esc(full.bankName)) : '') +
-        (full.accountNumber ? dl('Account number', '<span class="mono">' + esc(full.accountNumber) + '</span>') : '') +
-        (full.iban ? dl('IBAN', '<span class="mono">' + esc(full.iban) + '</span>') : '') +
-        (full.routingNumber ? dl('Routing number', '<span class="mono">' + esc(full.routingNumber) + '</span>') : '') +
-        (full.ifscCode ? dl('IFSC code', '<span class="mono">' + esc(full.ifscCode) + '</span>') : '') +
-        (full.swiftCode ? dl('SWIFT / BIC', '<span class="mono">' + esc(full.swiftCode) + '</span>') : '') +
-        (full.panNumber ? dl('PAN', '<span class="mono">' + esc(full.panNumber) + '</span>') : '') +
-        (full.taxIdNumber ? dl('Tax ID', '<span class="mono">' + esc(full.taxIdNumber) + '</span>') : '') +
-        dl('Payment method', esc(pay.paymentMethod || '—'));
+    if (state.editContact) {
       body =
-        '<div class="card-title" style="display:flex;justify-content:space-between;align-items:center">Payment account<button class="linklike" data-act="hide-pay">Hide</button></div>' +
-        '<div class="detail-list">' + rows + '</div>';
+        '<div class="detail-list">' +
+        dl('Email', editInput('ec-email', ct.email, 'email@example.com')) +
+        dl('Phone', editInput('ec-phone', ct.phone, '+1 555 123 4567')) +
+        dl(
+          'Address',
+          editInput('ec-line1', af.line1, 'Address line 1') +
+            '<div style="height:8px"></div>' +
+            editInput('ec-line2', af.line2, 'Address line 2 (optional)') +
+            '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">' +
+            editInput('ec-city', af.city, 'City') +
+            editInput('ec-state', af.state, 'State / Province') +
+            editInput('ec-zip', af.postalCode, 'Postal code') +
+            editInput('ec-country', af.country, 'Country') +
+            '</div>'
+        ) +
+        '</div>' +
+        (state.saveError ? '<div class="save-err">' + esc(state.saveError) + '</div>' : '');
     } else {
-      var revealBtn = pay.bankLast4
-        ? ' <button class="linklike" data-act="reveal-pay">' +
-          (state.contractsLoading ? 'Revealing…' : 'Reveal') +
-          '</button>'
-        : '';
       body =
-        '<div class="card-title">Payment account</div><div class="detail-list">' +
-        dl('Account holder', esc(pay.accountHolder || '—')) +
-        dl('Bank account', '<span class="mono">' + (pay.bankLast4 ? '•••• •••• ' + esc(pay.bankLast4) : '—') + '</span>' + revealBtn) +
-        dl('Payment method', esc(pay.paymentMethod || '—')) +
-        dl('Tax status', esc(pay.taxStatus || '—')) +
+        '<div class="detail-list">' +
+        dl('Registered address', esc(ct.address || '—')) +
+        dl('Phone', '<span class="mono">' + esc(ct.phone || '—') + '</span>') +
+        dl('Email', '<span class="mono">' + esc(ct.email || '—') + '</span>') +
         '</div>';
     }
-    return '<div class="card">' + body + '</div>';
+    return (
+      '<div class="card">' +
+      cardTitleBar('Contact &amp; identity', state.editContact, 'edit-contact', 'save-contact', 'cancel-contact') +
+      body +
+      '</div>'
+    );
+  }
+
+  // Payment account card. Masked by default; the admin can Reveal the full
+  // account/IBAN or Edit it (both fetch the full payout details on demand).
+  function paymentCard(p) {
+    var pay = p.payment || {};
+    var full =
+      state.contractsFull && state.contractsFull.length ? state.contractsFull[0].payment || {} : null;
+    var monoV = function (v) {
+      return '<span class="mono">' + esc(v) + '</span>';
+    };
+
+    // Edit mode — inputs seeded from the full (unredacted) payout details.
+    if (state.editPayment) {
+      var f = full || {};
+      var erows =
+        dl('Account holder', editInput('ep-holder', f.accountHolderName, 'Name on account')) +
+        dl('Bank name', editInput('ep-bank', f.bankName, 'Bank name')) +
+        dl('Account number', editInput('ep-acct', f.accountNumber, 'Account number')) +
+        dl('IBAN', editInput('ep-iban', f.iban, 'IBAN')) +
+        dl('Routing number', editInput('ep-routing', f.routingNumber, 'Routing number')) +
+        dl('IFSC code', editInput('ep-ifsc', f.ifscCode, 'IFSC code')) +
+        dl('SWIFT / BIC', editInput('ep-swift', f.swiftCode, 'SWIFT / BIC')) +
+        dl('PAN number', editInput('ep-pan', f.panNumber, 'PAN')) +
+        dl('Tax ID number', editInput('ep-taxid', f.taxIdNumber, 'Tax ID'));
+      return (
+        '<div class="card">' +
+        cardTitleBar('Payment account', true, 'edit-payment', 'save-payment', 'cancel-payment') +
+        '<div class="detail-list">' + erows + '</div>' +
+        (state.saveError ? '<div class="save-err">' + esc(state.saveError) + '</div>' : '') +
+        '</div>'
+      );
+    }
+
+    // Reveal (full) view.
+    if (state.revealPay && full) {
+      var rrows =
+        dl('Account holder', esc(full.accountHolderName || pay.accountHolder || '—')) +
+        (full.bankName ? dl('Bank name', esc(full.bankName)) : '') +
+        (full.accountNumber ? dl('Account number', monoV(full.accountNumber)) : '') +
+        (full.iban ? dl('IBAN', monoV(full.iban)) : '') +
+        (full.routingNumber ? dl('Routing number', monoV(full.routingNumber)) : '') +
+        (full.ifscCode ? dl('IFSC code', monoV(full.ifscCode)) : '') +
+        (full.swiftCode ? dl('SWIFT / BIC', monoV(full.swiftCode)) : '') +
+        (full.panNumber ? dl('PAN', monoV(full.panNumber)) : '') +
+        (full.taxIdNumber ? dl('Tax ID', monoV(full.taxIdNumber)) : '') +
+        dl('Payment method', esc(pay.paymentMethod || '—'));
+      return (
+        '<div class="card">' +
+        '<div class="card-title" style="display:flex;justify-content:space-between;align-items:center">Payment account' +
+        '<span style="display:flex;gap:14px"><button class="linklike" data-act="edit-payment">Edit</button><button class="linklike" data-act="hide-pay">Hide</button></span></div>' +
+        '<div class="detail-list">' + rrows + '</div></div>'
+      );
+    }
+
+    // Masked view.
+    var revealBtn = pay.bankLast4
+      ? ' <button class="linklike" data-act="reveal-pay">' +
+        (state.contractsLoading && !state.editPayment ? 'Revealing…' : 'Reveal') +
+        '</button>'
+      : '';
+    return (
+      '<div class="card">' +
+      '<div class="card-title" style="display:flex;justify-content:space-between;align-items:center">Payment account<button class="linklike" data-act="edit-payment">Edit</button></div>' +
+      '<div class="detail-list">' +
+      dl('Account holder', esc(pay.accountHolder || '—')) +
+      dl('Bank account', '<span class="mono">' + (pay.bankLast4 ? '•••• •••• ' + esc(pay.bankLast4) : '—') + '</span>' + revealBtn) +
+      dl('Payment method', esc(pay.paymentMethod || '—')) +
+      dl('Tax status', esc(pay.taxStatus || '—')) +
+      '</div></div>'
+    );
   }
   function dl(k, v) {
     return '<div><div class="k">' + esc(k) + '</div><div class="v">' + v + '</div></div>';
@@ -745,50 +849,6 @@
     return '<div class="section-table">' + title + head + rows + '</div>';
   }
 
-  function deliverablesTab(p) {
-    var head =
-      '<div class="st-headrow" style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr"><div>Deliverables</div><div>Platform</div><div>Due</div><div>Status</div></div>';
-    var rows =
-      p.deliverables && p.deliverables.length
-        ? p.deliverables
-            .map(function (d) {
-              return (
-                '<div class="st-row" style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr">' +
-                '<div style="font-weight:600">' +
-                esc(d.type) +
-                '</div><div class="dim">' +
-                esc(d.platform) +
-                '</div><div class="dim">' +
-                fmtDate(d.due) +
-                '</div>' +
-                '<div><span class="badge badge-sm" style="' +
-                statusStyle(d.status) +
-                '">' +
-                esc(d.status) +
-                '</span></div></div>'
-              );
-            })
-            .join('')
-        : '<div class="empty">No deliverables recorded.</div>';
-    var ur = p.usageRights || {};
-    var rights =
-      '<div class="card grid-4" style="gap:20px">' +
-      kv('Usage rights', esc(ur.usageRights || '—')) +
-      kv('Exclusivity', esc(ur.exclusivity || '—')) +
-      kv('Paid ad rights', esc(ur.paidAdRights || '—')) +
-      kv('Deadline', fmtDate(ur.deadline)) +
-      '</div>';
-    return (
-      '<div style="display:flex;flex-direction:column;gap:20px">' +
-      '<div class="section-table"><div class="st-title">Deliverables</div>' +
-      head +
-      rows +
-      '</div>' +
-      rights +
-      '</div>'
-    );
-  }
-
   function performanceTab(p) {
     return (
       '<div class="grid-4">' +
@@ -808,23 +868,39 @@
   }
 
   function campaignsTab(p) {
+    var cols = 'display:grid;grid-template-columns:1.5fr 1.7fr 1.5fr 1fr 0.8fr;gap:12px';
     var head =
-      '<div class="st-headrow" style="display:grid;grid-template-columns:1.4fr 1fr 1fr 0.8fr"><div>Campaign / Brand</div><div>Start</div><div>End</div><div>Status</div></div>';
+      '<div class="st-headrow" style="' + cols + '"><div>Campaign / Brand</div><div>Deliverables</div><div>Usage rights</div><div>Dates</div><div>Status</div></div>';
     var rows =
       p.contracts && p.contracts.length
         ? p.contracts
             .map(function (ct) {
+              var delivSub = [ct.platform, ct.numberOfDeliverables ? ct.numberOfDeliverables + ' deliverable' + (ct.numberOfDeliverables === 1 ? '' : 's') : null]
+                .filter(Boolean)
+                .join(' · ');
+              var rightsSub = ct.exclusivity && ct.exclusivity !== 'None' ? 'Exclusivity: ' + ct.exclusivity : '';
+              var due = ct.deadline || ct.end;
               return (
-                '<div class="st-row" style="display:grid;grid-template-columns:1.4fr 1fr 1fr 0.8fr">' +
+                '<div class="st-row" style="' + cols + '">' +
                 '<div><div style="font-weight:600">' +
                 esc(ct.campaign) +
                 '</div><div class="dim" style="font-size:12px">' +
                 esc(ct.brand) +
                 '</div></div>' +
-                '<div class="dim">' +
+                '<div><div>' +
+                esc(ct.deliverables || '—') +
+                '</div>' +
+                (delivSub ? '<div class="dim" style="font-size:12px">' + esc(delivSub) + '</div>' : '') +
+                '</div>' +
+                '<div><div>' +
+                esc(ct.usageRights || '—') +
+                '</div>' +
+                (rightsSub ? '<div class="dim" style="font-size:12px">' + esc(rightsSub) + '</div>' : '') +
+                '</div>' +
+                '<div class="dim"><div>' +
                 fmtMonth(ct.start) +
-                '</div><div class="dim">' +
-                fmtMonth(ct.end) +
+                '</div>' +
+                (due ? '<div style="font-size:12px">Due ' + fmtDate(due) + '</div>' : '') +
                 '</div>' +
                 '<div><span class="badge badge-sm" style="' +
                 statusStyle(ct.status) +
@@ -835,7 +911,7 @@
             })
             .join('')
         : '<div class="empty">No campaigns on record.</div>';
-    return '<div class="section-table"><div class="st-title">Campaign participation</div>' + head + rows + '</div>';
+    return '<div class="section-table"><div class="st-title">Campaigns · deliverables &amp; rights</div>' + head + rows + '</div>';
   }
 
   // ---- render + events ----------------------------------------------------
@@ -873,24 +949,42 @@
       });
     }
     if (act === 'close-modal') return setState({ modalContractId: null });
+    // ---- inline edit of contact + payment ----
+    if (act === 'edit-contact') return setState({ editContact: true, saveError: null });
+    if (act === 'cancel-contact') return setState({ editContact: false, saveError: null });
+    if (act === 'save-contact') return saveContact();
+    if (act === 'edit-payment') {
+      // Needs the full payout details to seed the form.
+      return loadContractsFull(function () {
+        setState({ editPayment: true, revealPay: false, saveError: null });
+      });
+    }
+    if (act === 'cancel-payment') return setState({ editPayment: false, saveError: null });
+    if (act === 'save-payment') return savePayment();
     if (act === 'signout') {
       fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(function () {});
       setState({ view: 'login', username: '', password: '', selectedId: null, expandedId: null });
       return;
     }
-    if (act === 'risk') return setState({ riskFilter: el.getAttribute('data-risk') });
     if (act === 'toggle') {
       var id = el.getAttribute('data-id');
       return setState({ expandedId: state.expandedId === id ? null : id });
     }
     if (act === 'open') {
       state.selectedId = el.getAttribute('data-id');
-      state.activeTab = 'overview';
+      state.activeTab = 'performance';
       loadProfile(state.selectedId);
       return;
     }
     if (act === 'back') return setState({ selectedId: null, profile: null });
-    if (act === 'tab') return setState({ activeTab: el.getAttribute('data-tab') });
+    if (act === 'tab') {
+      return setState({
+        activeTab: el.getAttribute('data-tab'),
+        editContact: false,
+        editPayment: false,
+        saveError: null,
+      });
+    }
   });
 
   // Escape closes the signed-contract modal.
@@ -945,12 +1039,11 @@
       // Re-render only the rows + count, keeping the input focused.
       var q = state.search.trim().toLowerCase();
       var list = data.creators.filter(function (c) {
-        var mq =
+        return (
           !q ||
           (c.name && c.name.toLowerCase().indexOf(q) >= 0) ||
-          (c.handle && c.handle.toLowerCase().indexOf(q) >= 0);
-        var mr = state.riskFilter === 'All' || c.risk === state.riskFilter;
-        return mq && mr;
+          (c.handle && c.handle.toLowerCase().indexOf(q) >= 0)
+        );
       });
       var tbl = root.querySelector('.table');
       var sub = root.querySelector('.page-sub');
