@@ -390,7 +390,7 @@ button {
 }
 .roster-grid {
   display: grid;
-  grid-template-columns: 2.2fr 1fr 0.9fr 1fr 0.8fr 0.9fr 0.9fr 40px;
+  grid-template-columns: 2.2fr 1fr 0.9fr 1fr 0.8fr 0.9fr 40px;
   align-items: center;
 }
 .roster-head {
@@ -756,6 +756,27 @@ button {
 .linklike:hover {
   opacity: 0.7;
 }
+.edit-input {
+  width: 100%;
+  height: 38px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-alt);
+  color: var(--text);
+  padding: 0 12px;
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+}
+.edit-input:focus {
+  border-color: var(--text-faint);
+}
+.save-err {
+  margin-top: 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #dc2626;
+}
 .st-row-click:hover {
   background: var(--surface-alt);
 }
@@ -869,7 +890,7 @@ button {
 
 @media (max-width: 720px) {
   .roster-grid {
-    grid-template-columns: 2fr 0.8fr 0.9fr 40px;
+    grid-template-columns: 2fr 0.9fr 40px;
   }
   .roster-grid .hide-sm {
     display: none;

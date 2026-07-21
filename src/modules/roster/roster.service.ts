@@ -1,6 +1,7 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { Contract, Creator, CreatorStats } from '@prisma/client';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { Contract, Creator, CreatorStats, Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { UpdateDetailsDto } from './dto/update-details.dto';
 
 /**
  * Read-model that powers the admin Creator Database UI (served from /public).
@@ -227,10 +228,84 @@ export class RosterService {
         value: ct.compensation,
         currency: ct.currency ?? 'USD',
         status: this.contractStatusLabel(ct.status),
+        // Per-campaign deliverables + rights (shown as columns in the UI).
+        deliverables: ct.deliverables ?? null,
+        platform: ct.platform ?? null,
+        numberOfDeliverables: ct.numberOfDeliverables ?? null,
+        usageRights: ct.usageRights ?? null,
+        exclusivity: ct.exclusivity ?? null,
+        deadline: ct.deadline ? ct.deadline.toISOString() : null,
       })),
       platformBreakdown: this.buildPlatformBreakdown(stats, combinedViews),
-      riskAssessment: this.buildRiskAssessment(creator, stats, contracts),
     };
+  }
+
+  /**
+   * Admin edit of a creator's contact + payout details. Email/phone update the
+   * master Creator; address + payout details update the creator's most recent
+   * contract (the record of payment). Returns the refreshed profile.
+   */
+  async updateDetails(id: string, dto: UpdateDetailsDto): Promise<unknown> {
+    const creator = await this.prisma.creator.findUnique({ where: { id } });
+    if (!creator) throw new NotFoundException(`Creator ${id} not found`);
+
+    const contact = dto.contact ?? {};
+    const payment = dto.payment ?? {};
+
+    // 1. Creator-level identity/contact.
+    const creatorData: Prisma.CreatorUncheckedUpdateInput = {};
+    if (contact.email !== undefined) creatorData.email = contact.email || null;
+    if (contact.phone !== undefined) creatorData.phoneNumber = contact.phone || null;
+    if (Object.keys(creatorData).length) {
+      try {
+        await this.prisma.creator.update({ where: { id }, data: creatorData });
+      } catch (err) {
+        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+          throw new BadRequestException('That email is already assigned to another creator');
+        }
+        throw err;
+      }
+    }
+
+    // 2. Address + payout live on the latest contract.
+    const latest = await this.prisma.contract.findFirst({
+      where: { creatorId: id },
+      orderBy: { createdAt: 'desc' },
+    });
+    const wantsContractEdit =
+      contact.address !== undefined || contact.phone !== undefined || Object.keys(payment).length > 0;
+
+    if (wantsContractEdit) {
+      if (!latest) {
+        throw new BadRequestException(
+          'This creator has no contract yet, so address and payout details cannot be stored',
+        );
+      }
+      const contractData: Prisma.ContractUncheckedUpdateInput = {};
+      if (contact.phone !== undefined) contractData.signerPhone = contact.phone || null;
+      const a = contact.address;
+      if (a !== undefined) {
+        contractData.addressLine1 = a.line1 ?? null;
+        contractData.addressLine2 = a.line2 ?? null;
+        contractData.addressCity = a.city ?? null;
+        contractData.addressState = a.state ?? null;
+        contractData.addressPostalCode = a.postalCode ?? null;
+        contractData.addressCountry = a.country ?? null;
+      }
+      if (Object.keys(payment).length > 0) {
+        const existing = (latest.paymentDetails as Record<string, unknown> | null) ?? {};
+        const merged: Record<string, unknown> = { ...existing };
+        for (const [k, v] of Object.entries(payment)) merged[k] = v === '' ? undefined : v;
+        // Drop keys explicitly cleared to empty.
+        for (const k of Object.keys(merged)) if (merged[k] === undefined) delete merged[k];
+        contractData.paymentDetails = merged as Prisma.InputJsonValue;
+      }
+      if (Object.keys(contractData).length) {
+        await this.prisma.contract.update({ where: { id: latest.id }, data: contractData });
+      }
+    }
+
+    return this.profile(id);
   }
 
   /**
@@ -314,16 +389,19 @@ export class RosterService {
           .filter(Boolean)
           .join(', ')
       : null;
-    const signed = contracts.find((c) => c.signatureImage || c.signerName);
     return {
       address: addr,
       phone: contracts.find((c) => c.signerPhone)?.signerPhone ?? creator.phoneNumber ?? null,
       email: creator.email ?? contracts.find((c) => c.signerEmail)?.signerEmail ?? null,
-      signature: !!signed?.signatureImage,
-      signerName: signed?.signerName ?? null,
-      signedDate: signed
-        ? (signed.signerSignedDate ?? signed.signedAt)?.toISOString() ?? null
-        : null,
+      // Discrete address fields so the admin can edit them in place.
+      addressFields: {
+        line1: withAddr?.addressLine1 ?? null,
+        line2: withAddr?.addressLine2 ?? null,
+        city: withAddr?.addressCity ?? null,
+        state: withAddr?.addressState ?? null,
+        postalCode: withAddr?.addressPostalCode ?? null,
+        country: withAddr?.addressCountry ?? null,
+      },
     };
   }
 
@@ -423,37 +501,5 @@ export class RosterService {
           sharePct: Math.round((e.views / maxViews) * 100),
         };
       });
-  }
-
-  private buildRiskAssessment(creator: Creator, stats: CreatorStats[], contracts: Contract[]) {
-    const risk = this.normalizeRisk(creator.riskLevel);
-    const completed = stats.filter((s) => s.deliverablesComplete === true).length;
-    const withDeliverables = stats.filter((s) => s.deliverablesComplete !== null).length;
-    const hasTax = contracts.some((c) => {
-      const pd = c.paymentDetails as Record<string, string> | null;
-      return pd && (pd.taxIdNumber || pd.panNumber);
-    });
-    const signed = contracts.some((c) => c.signatureImage);
-
-    const compliance = risk === 'High' ? 'Review required' : risk === 'Med' ? 'Monitor' : 'Clean';
-    const payment = hasTax ? 'Tax form on file' : 'Tax form outstanding';
-    const delivery = withDeliverables
-      ? `${completed}/${withDeliverables} campaigns complete`
-      : 'No history yet';
-
-    const notes: string[] = [];
-    notes.push(
-      `${stats.length || contracts.length} campaign${
-        (stats.length || contracts.length) === 1 ? '' : 's'
-      } on record`,
-    );
-    if (!signed) notes.push('signed contract missing');
-    if (!hasTax) notes.push('tax details outstanding');
-    if (risk === 'High') notes.push('flagged high-risk — review before renewal');
-
-    return {
-      note: `${notes.join(' · ')}.`.replace(/^./, (m) => m.toUpperCase()),
-      factors: { compliance, payment, delivery },
-    };
   }
 }
