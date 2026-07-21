@@ -12,7 +12,9 @@ import {
 import { ActivityChange } from '../activity-log/activity-change.interface';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { CreatorUpsertInput, FILL_ONLY_FIELDS, MERGEABLE_FIELDS } from './creator-fields.interface';
-import { CreatorsRepository } from './creators.repository';
+import { CreatorsRepository, CreatorWithContractCount } from './creators.repository';
+import { CategorizeCreatorsDto } from './dto/categorize-creators.dto';
+import { CategorizeResult } from './dto/categorize-result.interface';
 import { CreateCreatorDto } from './dto/create-creator.dto';
 import { ParticipationQueryDto } from './dto/participation-query.dto';
 import { QueryCreatorsDto } from './dto/query-creators.dto';
@@ -84,7 +86,7 @@ export class CreatorsService {
   // Read API
   // -------------------------------------------------------------------------
 
-  async findMany(query: QueryCreatorsDto): Promise<PaginatedResponse<Creator>> {
+  async findMany(query: QueryCreatorsDto): Promise<PaginatedResponse<CreatorWithContractCount>> {
     const { data, total } = await this.repo.search(query);
     return buildPaginatedResponse(data, total, query.page, query.limit);
   }
@@ -177,6 +179,58 @@ export class CreatorsService {
     });
 
     return { results };
+  }
+
+  /**
+   * Classify a batch of {email, instagramUsername} keys as used/unused/new.
+   * Positional — the response is the same length and order as `dto.keys`. The
+   * caller (Deal Studio) uses this to render the badge on its creators table
+   * with one round-trip instead of N.
+   *   • used   — creator exists AND has ≥1 contract row (any status)
+   *   • unused — creator exists but has NO contract rows
+   *   • new    — no creator matches the key
+   *
+   * Distinct from checkParticipation above: that one answers "have they been
+   * in ANOTHER campaign", used to route returning creators through the offer
+   * portal; this one answers "have they signed a contract with us", used for
+   * the Deal Studio's Used/Unused/New badge.
+   */
+  async categorize(dto: CategorizeCreatorsDto): Promise<CategorizeResult[]> {
+    // Normalize each key so a caller passing "Alex@Example.COM" or a full IG
+    // URL still matches the stored (lower-cased, handle-only) master record.
+    const normalized = dto.keys.map((k) => ({
+      email: normalizeEmail(k.email),
+      instagramUsername: normalizeInstagram(k.instagramUsername),
+    }));
+
+    // One query per unique identity — de-dup handled inside the repo.
+    const matches = await this.repo.findByIdentityKeys(normalized);
+    const byEmail = new Map<string, (typeof matches)[number]>();
+    const byIg = new Map<string, (typeof matches)[number]>();
+    for (const m of matches) {
+      if (m.email) byEmail.set(m.email, m);
+      if (m.instagramUsername) byIg.set(m.instagramUsername, m);
+    }
+
+    return normalized.map((key) => {
+      const hit =
+        (key.email && byEmail.get(key.email)) ||
+        (key.instagramUsername && byIg.get(key.instagramUsername)) ||
+        null;
+      if (!hit) return { key, category: 'new', creator: null };
+      const category = hit.contractsCount > 0 ? 'used' : 'unused';
+      return {
+        key,
+        category,
+        creator: {
+          id: hit.id,
+          creatorName: hit.creatorName,
+          email: hit.email,
+          instagramUsername: hit.instagramUsername,
+          contractsCount: hit.contractsCount,
+        },
+      };
+    });
   }
 
   /**
