@@ -21,7 +21,7 @@
     search: '',
     expandedId: null,
     selectedId: null,
-    activeTab: 'contract',
+    activeTab: 'performance',
     // Inline edit state for the Contact & Payment cards.
     editContact: false,
     editPayment: false,
@@ -461,9 +461,9 @@
 
   // ---- profile ------------------------------------------------------------
   var TAB_DEFS = [
+    { key: 'performance', label: 'Performance' },
     { key: 'contract', label: 'Contract & Legal' },
     { key: 'campaigns', label: 'Campaigns' },
-    { key: 'performance', label: 'Performance' },
   ];
 
   function profileView() {
@@ -972,7 +972,7 @@
     }
     if (act === 'open') {
       state.selectedId = el.getAttribute('data-id');
-      state.activeTab = 'contract';
+      state.activeTab = 'performance';
       loadProfile(state.selectedId);
       return;
     }
