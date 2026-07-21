@@ -58,6 +58,13 @@ export class RosterService {
       .filter((p) => p === 'IG' || p === 'TT' || p === 'YT');
   }
 
+  /** Friendly platform label from a stored "IG, TT" string, e.g. "Instagram · TikTok". */
+  private platformLabel(platforms: string | null): string | null {
+    const codes = this.platformCodes(platforms);
+    if (!codes.length) return null;
+    return codes.map((c) => RosterService.PLATFORM_NAME[c] ?? c).join(' · ');
+  }
+
   private initials(name: string): string {
     return name
       .split(/\s+/)
@@ -125,10 +132,11 @@ export class RosterService {
       statsByCreator.set(s.creatorId, e);
     }
 
-    // Track signed contracts per creator. "Used" = the creator has signed a
-    // contract for at least one campaign (status SIGNED or COMPLETED); everyone
-    // else — including creators with only unsigned/pending contracts or none at
-    // all — is "Unused". Ingested contracts default to COMPLETED.
+    // Track signed contracts per creator. A creator is "Used" when we've worked
+    // with them — either they've signed a contract (status SIGNED or COMPLETED)
+    // OR we already hold their campaign performance from influence-stats (they
+    // ran campaigns with us before their contracts landed in this DB). Only
+    // creators with no contract AND no performance history are "Unused".
     const contractsByCreator = new Map<
       string,
       { active: number; signed: number; signature: boolean; lastCampaign: string | null }
@@ -155,15 +163,18 @@ export class RosterService {
       const platforms = st ? order.filter((code) => st.platforms.has(code)) : [];
       const name = this.displayName(c);
       const signedContracts = ct?.signed ?? 0;
+      const campaignsRun = st?.count ?? 0;
       return {
         id: c.id,
         name,
         handle: this.handle(c),
         initials: this.initials(name),
         platforms,
-        campaigns: st?.count ?? 0,
+        campaigns: campaignsRun,
         signedContracts,
-        segment: signedContracts >= 1 ? 'used' : 'unused',
+        // Used if they've signed a contract OR we have their campaign
+        // performance on record; otherwise Unused.
+        segment: signedContracts >= 1 || campaignsRun >= 1 ? 'used' : 'unused',
         views: st?.views ?? c.averageViews ?? 0,
         cpm: c.cpm,
         engagement: this.engagementPct(c.engagementRate),
@@ -196,6 +207,9 @@ export class RosterService {
     const latestContract = contracts[0];
     const latestStats = stats[0];
 
+    // Every campaign the creator has run — merged from contracts + influence-stats.
+    const campaignList = this.buildCampaignList(contracts, stats);
+
     return {
       id: creator.id,
       name: this.displayName(creator),
@@ -206,7 +220,9 @@ export class RosterService {
       views: combinedViews,
       cpm: creator.cpm,
       engagement: this.engagementPct(creator.engagementRate),
-      campaigns: stats.length || contracts.length,
+      campaigns: campaignList.length,
+      // Unified campaign list (contracts + stats) shown in the Campaigns tab.
+      campaignList,
 
       contact: this.buildContact(creator, contracts),
       payment: this.buildPayment(contracts),
@@ -445,6 +461,88 @@ export class RosterService {
         status: this.contractStatusLabel(c.status),
         campaign: c.campaignName ?? c.brandName ?? null,
       }));
+  }
+
+  /**
+   * The campaigns a creator has participated in, drawn from BOTH signed
+   * contracts and influence-stats performance snapshots (campaigns.influence
+   * .technology). A campaign with a contract carries the full commercial detail
+   * (deliverables, usage rights, exclusivity, value); a campaign we only know
+   * from stats still shows up with its brand, platforms and views. Campaigns
+   * present in both sources are merged into one row (keyed by campaign name).
+   */
+  private buildCampaignList(contracts: Contract[], stats: CreatorStats[]) {
+    interface CampaignRow {
+      campaign: string;
+      brand: string;
+      start: string | null;
+      deadline: string | null;
+      status: 'Active' | 'Completed' | 'Pending';
+      deliverables: string | null;
+      platform: string | null;
+      numberOfDeliverables: number | null;
+      usageRights: string | null;
+      exclusivity: string | null;
+      views: number | null;
+      source: 'contract' | 'stats' | 'both';
+    }
+
+    const rows = new Map<string, CampaignRow>();
+    const keyFor = (name: string | null | undefined, fallback: string): string => {
+      const k = (name ?? '').trim().toLowerCase();
+      return k || `id:${fallback}`;
+    };
+
+    // Contracts first — the richest source of commercial detail.
+    for (const ct of contracts) {
+      rows.set(keyFor(ct.campaignName, ct.id), {
+        campaign: ct.campaignName ?? '—',
+        brand: ct.brandName ?? '—',
+        start: ct.createdAt.toISOString(),
+        deadline: ct.deadline ? ct.deadline.toISOString() : null,
+        status: this.contractStatusLabel(ct.status),
+        deliverables: ct.deliverables ?? null,
+        platform: ct.platform ?? null,
+        numberOfDeliverables: ct.numberOfDeliverables ?? null,
+        usageRights: ct.usageRights ?? null,
+        exclusivity: ct.exclusivity ?? null,
+        views: null,
+        source: 'contract',
+      });
+    }
+
+    // Stats snapshots — augment a matching campaign, or add a performance-only row.
+    for (const s of stats) {
+      const key = keyFor(s.campaignName, s.statsCampaignId);
+      const existing = rows.get(key);
+      const statsViews = s.totalViews ?? null;
+      const statsPlatform = this.platformLabel(s.platforms);
+      if (existing) {
+        existing.views = (existing.views ?? 0) + (statsViews ?? 0);
+        if (!existing.platform && statsPlatform) existing.platform = statsPlatform;
+        if (existing.brand === '—' && s.brandName) existing.brand = s.brandName;
+        if (!existing.deadline && s.deadline) existing.deadline = s.deadline.toISOString();
+        if (existing.source === 'contract') existing.source = 'both';
+      } else {
+        rows.set(key, {
+          campaign: s.campaignName ?? '—',
+          brand: s.brandName ?? '—',
+          start: null,
+          deadline: s.deadline ? s.deadline.toISOString() : null,
+          status: s.deliverablesComplete ? 'Completed' : 'Active',
+          deliverables:
+            s.minVideos != null ? `${s.minVideos} video${s.minVideos === 1 ? '' : 's'}` : null,
+          platform: statsPlatform,
+          numberOfDeliverables: s.videosPosted ?? s.minVideos ?? null,
+          usageRights: s.paidAdRights ?? null,
+          exclusivity: null,
+          views: statsViews,
+          source: 'stats',
+        });
+      }
+    }
+
+    return [...rows.values()];
   }
 
   private buildPlatformBreakdown(stats: CreatorStats[], combinedViews: number) {
