@@ -19,6 +19,11 @@ export class EditAddressDto {
 }
 
 export class EditContactDto {
+  /** Master identity fields — editable directly on the Creator record.
+   *  Empty strings clear the field (validated as strings, then coerced to null). */
+  @IsOptional() @IsString() @MaxLength(200) creatorName?: string;
+  @IsOptional() @IsString() @MaxLength(200) instagramUsername?: string;
+
   @IsOptional()
   @IsEmail({}, { message: 'email must be a valid email address' })
   email?: string;

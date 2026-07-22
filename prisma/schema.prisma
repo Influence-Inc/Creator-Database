@@ -74,6 +74,18 @@ model Creator {
   email                String? @unique
   phoneNumber          String?
 
+  // --- Mailing address (Contact & identity in the dashboard) ---------------
+  // Nullable on purpose — a creator can be tracked before we've collected an
+  // address. When a signed contract exists, the same address is mirrored to
+  // Contract.addressLine1… so payments still read from the payment-of-record
+  // (see roster.service.updateDetails).
+  addressLine1      String?
+  addressLine2      String?
+  addressCity       String?
+  addressState      String?
+  addressPostalCode String?
+  addressCountry    String?
+
   // --- Campaign info -------------------------------------------------------
   campaignName    String?
   campaignId      String?

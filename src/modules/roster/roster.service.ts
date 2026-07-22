@@ -249,9 +249,17 @@ export class RosterService {
   }
 
   /**
-   * Admin edit of a creator's contact + payout details. Email/phone update the
-   * master Creator; address + payout details update the creator's most recent
-   * contract (the record of payment). Returns the refreshed profile.
+   * Admin edit of a creator's contact + identity + payout details.
+   *
+   * Contact & identity fields (creatorName, instagramUsername, email, phone,
+   * address) always save directly to the master Creator record — a creator
+   * doesn't need a signed contract before we can track their name / handle /
+   * address. If a signed contract exists, the phone + address are mirrored
+   * onto the LATEST contract too (so payment-of-record documents stay in sync).
+   *
+   * Payout details (bank / IBAN / tax IDs) still require a contract — payment
+   * runs are attached to the specific contract they were paid against; there's
+   * no meaningful place to attach them without one.
    */
   async updateDetails(id: string, dto: UpdateDetailsDto): Promise<unknown> {
     const creator = await this.prisma.creator.findUnique({ where: { id } });
@@ -260,45 +268,58 @@ export class RosterService {
     const contact = dto.contact ?? {};
     const payment = dto.payment ?? {};
 
-    // 1. Creator-level identity/contact.
+    // 1. Master Creator: identity + all contact fields (email/phone/address).
+    //    Empty string clears the field; undefined leaves it untouched.
+    const norm = (v: string | undefined) => (v === undefined ? undefined : v.trim() || null);
     const creatorData: Prisma.CreatorUncheckedUpdateInput = {};
-    if (contact.email !== undefined) creatorData.email = contact.email || null;
-    if (contact.phone !== undefined) creatorData.phoneNumber = contact.phone || null;
+    if (contact.creatorName !== undefined) creatorData.creatorName = norm(contact.creatorName);
+    if (contact.instagramUsername !== undefined) {
+      const raw = norm(contact.instagramUsername);
+      creatorData.instagramUsername = raw ? raw.replace(/^@+/, '').toLowerCase() : null;
+    }
+    if (contact.email !== undefined) creatorData.email = norm(contact.email);
+    if (contact.phone !== undefined) creatorData.phoneNumber = norm(contact.phone);
+    if (contact.address !== undefined) {
+      const a = contact.address;
+      creatorData.addressLine1 = norm(a.line1);
+      creatorData.addressLine2 = norm(a.line2);
+      creatorData.addressCity = norm(a.city);
+      creatorData.addressState = norm(a.state);
+      creatorData.addressPostalCode = norm(a.postalCode);
+      creatorData.addressCountry = norm(a.country);
+    }
     if (Object.keys(creatorData).length) {
       try {
         await this.prisma.creator.update({ where: { id }, data: creatorData });
       } catch (err) {
         if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-          throw new BadRequestException('That email is already assigned to another creator');
+          throw new BadRequestException(
+            'That email or Instagram handle is already assigned to another creator',
+          );
         }
         throw err;
       }
     }
 
-    // 2. Address + payout live on the latest contract.
+    // 2. If a contract exists, mirror phone + address onto the LATEST contract so
+    //    the payment record stays in sync. Optional — a creator with no contract
+    //    is now perfectly valid to have contact / identity data on file.
     const latest = await this.prisma.contract.findFirst({
       where: { creatorId: id },
       orderBy: { createdAt: 'desc' },
     });
-    const wantsContractEdit =
-      contact.address !== undefined || contact.phone !== undefined || Object.keys(payment).length > 0;
 
-    if (wantsContractEdit) {
-      if (!latest) {
-        throw new BadRequestException(
-          'This creator has no contract yet, so address and payout details cannot be stored',
-        );
-      }
+    if (latest) {
       const contractData: Prisma.ContractUncheckedUpdateInput = {};
-      if (contact.phone !== undefined) contractData.signerPhone = contact.phone || null;
-      const a = contact.address;
-      if (a !== undefined) {
-        contractData.addressLine1 = a.line1 ?? null;
-        contractData.addressLine2 = a.line2 ?? null;
-        contractData.addressCity = a.city ?? null;
-        contractData.addressState = a.state ?? null;
-        contractData.addressPostalCode = a.postalCode ?? null;
-        contractData.addressCountry = a.country ?? null;
+      if (contact.phone !== undefined) contractData.signerPhone = norm(contact.phone);
+      if (contact.address !== undefined) {
+        const a = contact.address;
+        contractData.addressLine1 = norm(a.line1);
+        contractData.addressLine2 = norm(a.line2);
+        contractData.addressCity = norm(a.city);
+        contractData.addressState = norm(a.state);
+        contractData.addressPostalCode = norm(a.postalCode);
+        contractData.addressCountry = norm(a.country);
       }
       if (Object.keys(payment).length > 0) {
         const existing = (latest.paymentDetails as Record<string, unknown> | null) ?? {};
@@ -311,6 +332,12 @@ export class RosterService {
       if (Object.keys(contractData).length) {
         await this.prisma.contract.update({ where: { id: latest.id }, data: contractData });
       }
+    } else if (Object.keys(payment).length > 0) {
+      // Payment-only edit without a contract has nowhere to land. Contact /
+      // identity above already succeeded — payment is what's rejected.
+      throw new BadRequestException(
+        'This creator has no contract yet, so payout details cannot be stored',
+      );
     }
 
     return this.profile(id);
@@ -384,32 +411,39 @@ export class RosterService {
   }
 
   private buildContact(creator: Creator, contracts: Contract[]) {
-    const withAddr = contracts.find((c) => c.addressLine1 || c.addressCity || c.addressCountry);
-    const addr = withAddr
-      ? [
-          withAddr.addressLine1,
-          withAddr.addressLine2,
-          withAddr.addressCity,
-          withAddr.addressState,
-          withAddr.addressPostalCode,
-          withAddr.addressCountry,
-        ]
+    // Prefer the address stored directly on the master Creator (the source of
+    // truth going forward); fall back to the latest contract that carries an
+    // address so existing rows keep displaying correctly. Same fallback for
+    // phone — a phone captured at signing time is used only if the master
+    // record doesn't have one.
+    const contractWithAddr = contracts.find(
+      (c) => c.addressLine1 || c.addressCity || c.addressCountry,
+    );
+    const source = {
+      line1: creator.addressLine1 ?? contractWithAddr?.addressLine1 ?? null,
+      line2: creator.addressLine2 ?? contractWithAddr?.addressLine2 ?? null,
+      city: creator.addressCity ?? contractWithAddr?.addressCity ?? null,
+      state: creator.addressState ?? contractWithAddr?.addressState ?? null,
+      postalCode: creator.addressPostalCode ?? contractWithAddr?.addressPostalCode ?? null,
+      country: creator.addressCountry ?? contractWithAddr?.addressCountry ?? null,
+    };
+    const anyAddress =
+      source.line1 || source.line2 || source.city || source.state || source.postalCode || source.country;
+    const addr = anyAddress
+      ? [source.line1, source.line2, source.city, source.state, source.postalCode, source.country]
           .filter(Boolean)
           .join(', ')
       : null;
     return {
+      // Identity — exposed so the dashboard can render them in the Contact &
+      // identity card alongside the address, all editable together.
+      creatorName: creator.creatorName ?? null,
+      instagramUsername: creator.instagramUsername ?? null,
       address: addr,
-      phone: contracts.find((c) => c.signerPhone)?.signerPhone ?? creator.phoneNumber ?? null,
+      phone: creator.phoneNumber ?? contracts.find((c) => c.signerPhone)?.signerPhone ?? null,
       email: creator.email ?? contracts.find((c) => c.signerEmail)?.signerEmail ?? null,
       // Discrete address fields so the admin can edit them in place.
-      addressFields: {
-        line1: withAddr?.addressLine1 ?? null,
-        line2: withAddr?.addressLine2 ?? null,
-        city: withAddr?.addressCity ?? null,
-        state: withAddr?.addressState ?? null,
-        postalCode: withAddr?.addressPostalCode ?? null,
-        country: withAddr?.addressCountry ?? null,
-      },
+      addressFields: source,
     };
   }
 

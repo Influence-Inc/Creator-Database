@@ -276,6 +276,8 @@
     saveDetails(
       {
         contact: {
+          creatorName: fieldVal('ec-name'),
+          instagramUsername: fieldVal('ec-ig'),
           email: fieldVal('ec-email'),
           phone: fieldVal('ec-phone'),
           address: {
@@ -735,6 +737,10 @@
     if (state.editContact) {
       body =
         '<div class="detail-list">' +
+        // Identity — editable directly on the master Creator record even before
+        // a contract exists (see updateDetails in roster.service.ts).
+        dl('Name', editInput('ec-name', ct.creatorName, 'Full name')) +
+        dl('Instagram', editInput('ec-ig', ct.instagramUsername, '@handle')) +
         dl('Email', editInput('ec-email', ct.email, 'email@example.com')) +
         dl('Phone', editInput('ec-phone', ct.phone, '+1 555 123 4567')) +
         dl(
@@ -754,9 +760,16 @@
     } else {
       body =
         '<div class="detail-list">' +
-        dl('Registered address', esc(ct.address || '—')) +
-        dl('Phone', '<span class="mono">' + esc(ct.phone || '—') + '</span>') +
+        dl('Name', esc(ct.creatorName || '—')) +
+        dl(
+          'Instagram',
+          ct.instagramUsername
+            ? '<span class="mono">@' + esc(ct.instagramUsername) + '</span>'
+            : '—',
+        ) +
         dl('Email', '<span class="mono">' + esc(ct.email || '—') + '</span>') +
+        dl('Phone', '<span class="mono">' + esc(ct.phone || '—') + '</span>') +
+        dl('Registered address', esc(ct.address || '—')) +
         '</div>';
     }
     return (
