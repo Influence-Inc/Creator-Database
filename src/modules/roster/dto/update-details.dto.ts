@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   IsEmail,
   IsObject,
@@ -24,9 +24,16 @@ export class EditContactDto {
   @IsOptional() @IsString() @MaxLength(200) creatorName?: string;
   @IsOptional() @IsString() @MaxLength(200) instagramUsername?: string;
 
+  // Transform '' → null BEFORE @IsEmail runs so a cleared email field can
+  // actually clear the value instead of 400ing the whole save. class-validator's
+  // @IsOptional skips validators on null/undefined but NOT on '' — and the
+  // Contact-card edit form always emits the current field value, blank as ''.
+  // roster.service.updateDetails' `norm()` already turns null into "clear this
+  // field", so this transform makes the DTO agree with the service.
+  @Transform(({ value }) => (value === '' ? null : value))
   @IsOptional()
   @IsEmail({}, { message: 'email must be a valid email address' })
-  email?: string;
+  email?: string | null;
 
   @IsOptional() @IsString() @MaxLength(60) phone?: string;
 

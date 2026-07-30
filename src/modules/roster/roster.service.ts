@@ -270,7 +270,13 @@ export class RosterService {
 
     // 1. Master Creator: identity + all contact fields (email/phone/address).
     //    Empty string clears the field; undefined leaves it untouched.
-    const norm = (v: string | undefined) => (v === undefined ? undefined : v.trim() || null);
+    // null is a valid "clear this field" signal from the DTO — EditContactDto's
+    // @Transform turns '' → null for the email field so a cleared input can
+    // actually clear the value (@IsEmail rejects '' before validation would
+    // otherwise ever hit the service). Treat null the same as an already-empty
+    // trimmed string: persist as null.
+    const norm = (v: string | null | undefined) =>
+      v === undefined ? undefined : v === null ? null : v.trim() || null;
     const creatorData: Prisma.CreatorUncheckedUpdateInput = {};
     if (contact.creatorName !== undefined) creatorData.creatorName = norm(contact.creatorName);
     if (contact.instagramUsername !== undefined) {
