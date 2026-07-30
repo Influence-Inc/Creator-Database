@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   IsEmail,
   IsObject,
@@ -19,9 +19,16 @@ export class EditAddressDto {
 }
 
 export class EditContactDto {
+  // Transform '' → null BEFORE @IsEmail runs so an empty field can clear the
+  // email. class-validator's @IsOptional skips validators on null/undefined
+  // but NOT on '' — and the edit form ALWAYS emits the current value (empty
+  // if the field is blank), so without this a blank email field 400s the
+  // entire save with "email must be a valid email address". The service
+  // treats null as "clear" (creatorData.email = contact.email || null).
+  @Transform(({ value }) => (value === '' ? null : value))
   @IsOptional()
   @IsEmail({}, { message: 'email must be a valid email address' })
-  email?: string;
+  email?: string | null;
 
   @IsOptional() @IsString() @MaxLength(60) phone?: string;
 

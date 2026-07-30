@@ -260,60 +260,91 @@ export class RosterService {
     const contact = dto.contact ?? {};
     const payment = dto.payment ?? {};
 
-    // 1. Creator-level identity/contact.
-    const creatorData: Prisma.CreatorUncheckedUpdateInput = {};
-    if (contact.email !== undefined) creatorData.email = contact.email || null;
-    if (contact.phone !== undefined) creatorData.phoneNumber = contact.phone || null;
-    if (Object.keys(creatorData).length) {
-      try {
-        await this.prisma.creator.update({ where: { id }, data: creatorData });
-      } catch (err) {
-        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-          throw new BadRequestException('That email is already assigned to another creator');
-        }
-        throw err;
-      }
+    // The Contact edit form on /public re-emits EVERY field (email, phone, all
+    // address fields) on every save — the frontend has no per-field dirty
+    // tracking, so an `address: { line1: "", city: "", … }` block arrives even
+    // when the user only edited the email. Treat those empty echoes as absent:
+    // require a contract ONLY when the caller is actually persisting non-empty
+    // address or payment data. Otherwise editing a creator without a contract
+    // (very common) would always 400 with "no contract yet" no matter which
+    // field they touched — the reported bug.
+    const nonEmptyString = (v: unknown): v is string =>
+      typeof v === 'string' && v.trim() !== '';
+    const addr = contact.address;
+    const hasRealAddress =
+      !!addr &&
+      [addr.line1, addr.line2, addr.city, addr.state, addr.postalCode, addr.country].some(nonEmptyString);
+    const hasRealPayment = Object.values(payment).some(nonEmptyString);
+
+    if ((hasRealAddress || hasRealPayment) && !(await this.hasAnyContract(id))) {
+      throw new BadRequestException(
+        'This creator has no contract yet, so address and payout details cannot be stored',
+      );
     }
 
-    // 2. Address + payout live on the latest contract.
-    const latest = await this.prisma.contract.findFirst({
-      where: { creatorId: id },
-      orderBy: { createdAt: 'desc' },
-    });
-    const wantsContractEdit =
-      contact.address !== undefined || contact.phone !== undefined || Object.keys(payment).length > 0;
+    // Wrap both writes in one transaction so a failure on the contract side
+    // never leaves the Creator half-updated (previously the Creator save
+    // committed, then the "no contract" throw stranded us in an inconsistent
+    // state where the UI showed a stale contract but a new email).
+    await this.prisma.$transaction(async (tx) => {
+      // 1. Creator-level identity/contact — always safe, no contract required.
+      const creatorData: Prisma.CreatorUncheckedUpdateInput = {};
+      if (contact.email !== undefined) creatorData.email = contact.email || null;
+      if (contact.phone !== undefined) creatorData.phoneNumber = contact.phone || null;
+      if (Object.keys(creatorData).length) {
+        try {
+          await tx.creator.update({ where: { id }, data: creatorData });
+        } catch (err) {
+          if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+            throw new BadRequestException('That email is already assigned to another creator');
+          }
+          throw err;
+        }
+      }
 
-    if (wantsContractEdit) {
-      if (!latest) {
-        throw new BadRequestException(
-          'This creator has no contract yet, so address and payout details cannot be stored',
-        );
-      }
+      // 2. Address + payout + signerPhone live on the latest contract. If the
+      // creator has no contract yet, the Creator update above still succeeds and
+      // we silently skip the contract-side writes (the empty-echo case). We only
+      // reach this block with something to write if the pre-check above passed.
+      const latest = await tx.contract.findFirst({
+        where: { creatorId: id },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (!latest) return;
+
       const contractData: Prisma.ContractUncheckedUpdateInput = {};
+      // Copy phone → contract.signerPhone as a bonus; skipped when no contract.
       if (contact.phone !== undefined) contractData.signerPhone = contact.phone || null;
-      const a = contact.address;
-      if (a !== undefined) {
-        contractData.addressLine1 = a.line1 ?? null;
-        contractData.addressLine2 = a.line2 ?? null;
-        contractData.addressCity = a.city ?? null;
-        contractData.addressState = a.state ?? null;
-        contractData.addressPostalCode = a.postalCode ?? null;
-        contractData.addressCountry = a.country ?? null;
+      if (hasRealAddress) {
+        contractData.addressLine1 = addr!.line1 ?? null;
+        contractData.addressLine2 = addr!.line2 ?? null;
+        contractData.addressCity = addr!.city ?? null;
+        contractData.addressState = addr!.state ?? null;
+        contractData.addressPostalCode = addr!.postalCode ?? null;
+        contractData.addressCountry = addr!.country ?? null;
       }
-      if (Object.keys(payment).length > 0) {
+      if (hasRealPayment) {
         const existing = (latest.paymentDetails as Record<string, unknown> | null) ?? {};
         const merged: Record<string, unknown> = { ...existing };
         for (const [k, v] of Object.entries(payment)) merged[k] = v === '' ? undefined : v;
-        // Drop keys explicitly cleared to empty.
         for (const k of Object.keys(merged)) if (merged[k] === undefined) delete merged[k];
         contractData.paymentDetails = merged as Prisma.InputJsonValue;
       }
       if (Object.keys(contractData).length) {
-        await this.prisma.contract.update({ where: { id: latest.id }, data: contractData });
+        await tx.contract.update({ where: { id: latest.id }, data: contractData });
       }
-    }
+    });
 
     return this.profile(id);
+  }
+
+  /** Cheap existence check to gate the "contract required" pre-flight. */
+  private async hasAnyContract(creatorId: string): Promise<boolean> {
+    const c = await this.prisma.contract.findFirst({
+      where: { creatorId },
+      select: { id: true },
+    });
+    return !!c;
   }
 
   /**
