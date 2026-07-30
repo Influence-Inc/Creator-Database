@@ -233,7 +233,10 @@
     state.saving = true;
     state.saveError = null;
     render();
-    fetch('/roster/' + encodeURIComponent(state.selectedId) + '/details', {
+    // Path on the URL captured up-front so we can log it on failure — useful
+    // when a save silently 4xx/5xxs and the user can't see why.
+    var path = '/roster/' + encodeURIComponent(state.selectedId) + '/details';
+    fetch(path, {
       method: 'PATCH',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -245,14 +248,23 @@
           state.selectedId = null;
           throw new Error('unauthorized');
         }
-        return r.json().then(function (j) {
-          return { ok: r.ok, j: j };
+        // Try JSON, fall back to text so a non-JSON error body (e.g. a proxy's
+        // 502 HTML page) still surfaces something informative instead of an
+        // opaque "Unexpected token" parse crash that reads as "Save failed".
+        return r.text().then(function (raw) {
+          var parsed = null;
+          try { parsed = raw ? JSON.parse(raw) : null; } catch (_) { /* not JSON */ }
+          return { ok: r.ok, status: r.status, j: parsed, raw: raw };
         });
       })
       .then(function (res) {
         if (!res.ok) {
           var m = res.j && res.j.message;
-          throw new Error(Array.isArray(m) ? m.join(', ') : m || 'Save failed');
+          var msg = Array.isArray(m) ? m.join(', ') : m || (res.raw ? String(res.raw).slice(0, 300) : 'Save failed');
+          // Log the full response so devs can see the exact server error in the
+          // browser console (the on-page banner keeps the short message).
+          console.error('[saveDetails] PATCH ' + path + ' → ' + res.status, res.j || res.raw);
+          throw new Error('HTTP ' + res.status + ': ' + msg);
         }
         state.profile = res.j;
         state.contractsFull = null; // force a re-fetch of the unredacted view
@@ -267,6 +279,7 @@
           return;
         }
         state.saveError = (err && err.message) || 'Save failed';
+        console.error('[saveDetails] failed:', err);
         render();
       });
   }
@@ -736,6 +749,10 @@
     var body;
     if (state.editContact) {
       body =
+        // Error banner at the TOP so a failed save is immediately visible —
+        // the old bottom-of-card placement sat below the address block and
+        // read as "no feedback" to anyone who didn't scroll.
+        (state.saveError ? '<div class="save-err">' + esc(state.saveError) + '</div>' : '') +
         '<div class="detail-list">' +
         // Identity — editable directly on the master Creator record even before
         // a contract exists (see updateDetails in roster.service.ts).
@@ -755,8 +772,7 @@
             editInput('ec-country', af.country, 'Country') +
             '</div>'
         ) +
-        '</div>' +
-        (state.saveError ? '<div class="save-err">' + esc(state.saveError) + '</div>' : '');
+        '</div>';
     } else {
       body =
         '<div class="detail-list">' +
@@ -806,8 +822,10 @@
       return (
         '<div class="card">' +
         cardTitleBar('Payment account', true, 'edit-payment', 'save-payment', 'cancel-payment') +
-        '<div class="detail-list">' + erows + '</div>' +
+        // Same top-of-form placement as the contact card — surface errors above
+        // the fields so a failed save can't be missed.
         (state.saveError ? '<div class="save-err">' + esc(state.saveError) + '</div>' : '') +
+        '<div class="detail-list">' + erows + '</div>' +
         '</div>'
       );
     }

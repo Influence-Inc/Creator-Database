@@ -771,11 +771,24 @@ button {
 .edit-input:focus {
   border-color: var(--text-faint);
 }
+/* Save error banner. Positioned at the TOP of the edit form (see
+   contactCard / paymentCard) so a failed save is immediately visible without
+   scrolling past the fields — the old bottom-of-card placement read as "no
+   feedback" when the error landed below the fold. */
 .save-err {
-  margin-top: 12px;
-  font-size: 12.5px;
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  background: #fef2f2;
+  color: #b91c1c;
+  font-size: 13px;
   font-weight: 600;
-  color: #dc2626;
+}
+[data-theme='dark'] .save-err {
+  border-color: rgba(220, 38, 38, 0.35);
+  background: rgba(220, 38, 38, 0.12);
+  color: #fca5a5;
 }
 .st-row-click:hover {
   background: var(--surface-alt);
