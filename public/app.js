@@ -286,28 +286,62 @@
 
   function saveContact() {
     if (state.saving) return;
-    saveDetails(
-      {
-        contact: {
-          creatorName: fieldVal('ec-name'),
-          instagramUsername: fieldVal('ec-ig'),
-          email: fieldVal('ec-email'),
-          phone: fieldVal('ec-phone'),
-          address: {
-            line1: fieldVal('ec-line1'),
-            line2: fieldVal('ec-line2'),
-            city: fieldVal('ec-city'),
-            state: fieldVal('ec-state'),
-            postalCode: fieldVal('ec-zip'),
-            country: fieldVal('ec-country'),
-          },
-        },
-      },
-      function () {
-        state.editContact = false;
-        render();
-      },
-    );
+    var ct = (state.profile && state.profile.contact) || {};
+    var af = ct.addressFields || {};
+
+    // Send ONLY the fields the admin actually changed. Both email and
+    // instagramUsername are unique on the Creator; re-sending an UNCHANGED
+    // identity field used to make the backend re-write it, and if that value
+    // clashed with another creator the whole save 400'd — so changing just the
+    // email could fail because of the untouched Instagram handle. A minimal
+    // patch means an unchanged field can't be the culprit.
+    var contact = {};
+    var current = function (v) { return v == null ? '' : String(v); };
+    var changed = function (inputId, cur) {
+      var v = fieldVal(inputId);
+      return v !== current(cur) ? v : undefined;
+    };
+
+    var name = changed('ec-name', ct.creatorName);
+    if (name !== undefined) contact.creatorName = name;
+    var ig = changed('ec-ig', ct.instagramUsername);
+    if (ig !== undefined) contact.instagramUsername = ig;
+    var email = changed('ec-email', ct.email);
+    if (email !== undefined) contact.email = email;
+    var phone = changed('ec-phone', ct.phone);
+    if (phone !== undefined) contact.phone = phone;
+
+    // Address is a nested block the backend writes all-or-nothing, so include
+    // the whole object only when at least one of its fields changed.
+    var addr = {
+      line1: fieldVal('ec-line1'),
+      line2: fieldVal('ec-line2'),
+      city: fieldVal('ec-city'),
+      state: fieldVal('ec-state'),
+      postalCode: fieldVal('ec-zip'),
+      country: fieldVal('ec-country'),
+    };
+    var addrChanged =
+      addr.line1 !== current(af.line1) ||
+      addr.line2 !== current(af.line2) ||
+      addr.city !== current(af.city) ||
+      addr.state !== current(af.state) ||
+      addr.postalCode !== current(af.postalCode) ||
+      addr.country !== current(af.country);
+    if (addrChanged) contact.address = addr;
+
+    // Nothing changed — just leave edit mode, no request (and no chance of a
+    // spurious unique-constraint bounce).
+    if (Object.keys(contact).length === 0) {
+      state.editContact = false;
+      render();
+      return;
+    }
+
+    saveDetails({ contact: contact }, function () {
+      state.editContact = false;
+      render();
+    });
   }
 
   function savePayment() {

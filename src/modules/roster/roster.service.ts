@@ -299,9 +299,7 @@ export class RosterService {
         await this.prisma.creator.update({ where: { id }, data: creatorData });
       } catch (err) {
         if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-          throw new BadRequestException(
-            'That email or Instagram handle is already assigned to another creator',
-          );
+          throw await this.describeUniqueConflict(id, creatorData);
         }
         throw err;
       }
@@ -347,6 +345,55 @@ export class RosterService {
     }
 
     return this.profile(id);
+  }
+
+  /**
+   * Turn a P2002 (unique-constraint) failure from the Creator update into a
+   * message that names the EXACT field that collided and the creator that
+   * already holds the value — instead of the ambiguous "email or Instagram
+   * handle" that leaves an admin guessing (and blaming the field they just
+   * changed when the real clash is on a field they didn't touch). Both `email`
+   * and `instagramUsername` are @unique, and the edit form historically
+   * re-sent both on every save, so the clash is often on the UNCHANGED field.
+   */
+  private async describeUniqueConflict(
+    id: string,
+    creatorData: Prisma.CreatorUncheckedUpdateInput,
+  ): Promise<BadRequestException> {
+    const label = (c: {
+      creatorName: string | null;
+      instagramUsername: string | null;
+      email: string | null;
+    }) => c.creatorName || (c.instagramUsername ? `@${c.instagramUsername}` : null) || c.email || 'another creator';
+
+    const parts: string[] = [];
+
+    const email = typeof creatorData.email === 'string' ? creatorData.email : null;
+    if (email) {
+      const owner = await this.prisma.creator.findFirst({
+        where: { email, id: { not: id } },
+        select: { creatorName: true, instagramUsername: true, email: true },
+      });
+      if (owner) parts.push(`the email ${email} is already used by ${label(owner)}`);
+    }
+
+    const ig = typeof creatorData.instagramUsername === 'string' ? creatorData.instagramUsername : null;
+    if (ig) {
+      const owner = await this.prisma.creator.findFirst({
+        where: { instagramUsername: ig, id: { not: id } },
+        select: { creatorName: true, instagramUsername: true, email: true },
+      });
+      if (owner) parts.push(`the Instagram handle @${ig} is already used by ${label(owner)}`);
+    }
+
+    if (parts.length) {
+      return new BadRequestException(`Can't save — ${parts.join('; and ')}.`);
+    }
+    // P2002 fired but we couldn't pin the row (race, or a different unique
+    // field). Keep the generic message rather than claim a specific field.
+    return new BadRequestException(
+      'That email or Instagram handle is already assigned to another creator',
+    );
   }
 
   /**
