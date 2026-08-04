@@ -4,7 +4,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 
 /**
  * Renders a stored signed {@link Contract} as a self-contained, print-ready
- * legal document — a "Creator Content Agreement" — that an admin can view in the
+ * legal document — a "Creator Services Agreement" — that an admin can view in the
  * browser or download and save as PDF.
  *
  * The document deliberately EXCLUDES the creator's bank / payout details
@@ -32,10 +32,10 @@ export class ContractDocumentService {
   /** The person who countersigns on the Company's behalf. */
   private static readonly COMPANY_SIGNATORY = 'Tharun R';
 
-  // The authorised signatory's signature, embedded as inline SVG so the document
-  // stays self-contained (no external asset, no base64 blob) and scales crisply.
-  private static readonly COMPANY_SIGNATURE_SVG =
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 340" fill="none" stroke="#111111" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"><path d="M40 300 C 260 275, 470 175, 690 120"/><path d="M120 150 C 300 205, 430 198, 690 96"/><path d="M175 252 C 156 120, 182 66, 200 70 C 216 74, 206 200, 180 260"/><path d="M180 260 C 200 168, 226 170, 234 236 C 238 276, 264 280, 272 232 C 278 196, 302 194, 310 240 C 314 276, 340 282, 348 236"/><path d="M232 240 C 208 322, 232 376, 268 362 C 300 350, 290 266, 252 248"/><path d="M302 238 C 280 322, 304 378, 340 362 C 372 349, 360 264, 324 248"/><path d="M470 236 C 486 178, 522 182, 522 222 C 522 252, 486 252, 482 226 C 508 238, 532 264, 544 296"/><circle cx="604" cy="206" r="5" fill="#111111" stroke="none"/></svg>';
+  // The authorised signatory's signature, referenced by URL. The image is loaded
+  // by the viewer's browser when the document is opened or printed.
+  private static readonly COMPANY_SIGNATURE_URL =
+    'https://ik.imagekit.io/ry8a2dca0h/Tharun%20Signature%20-%20Govt%20Proofs.jpg?updatedAt=1765977839681';
 
   private static readonly CURRENCY_SYMBOL: Record<string, string> = {
     USD: '$',
@@ -122,12 +122,12 @@ export class ContractDocumentService {
     const who =
       creator.creatorName || contract.signerName || creator.instagramUsername || 'creator';
     const ref = contract.campaignName || contract.contractRef || 'agreement';
-    const raw = `Creator-Content-Agreement-${who}-${ref}`;
+    const raw = `Creator-Services-Agreement-${who}-${ref}`;
     const safe = raw
       .replace(/[^a-zA-Z0-9._-]+/g, '-')
       .replace(/-+/g, '-')
       .replace(/^-|-$/g, '');
-    return `${safe || 'Creator-Content-Agreement'}.html`;
+    return `${safe || 'Creator-Services-Agreement'}.html`;
   }
 
   // -------------------------------------------------------------------------
@@ -431,7 +431,7 @@ export class ContractDocumentService {
       (signedDate ? `<div class="sig-date">Date: ${this.fmtDate(signedDate)}</div>` : '') +
       `</div>` +
       `<div class="sig-block">` +
-      `<div class="sig-mark"><span class="company-sig">${ContractDocumentService.COMPANY_SIGNATURE_SVG}</span></div>` +
+      `<div class="sig-mark"><img class="sig-img" src="${this.esc(ContractDocumentService.COMPANY_SIGNATURE_URL)}" alt="Company signature"></div>` +
       `<div class="sig-rule"></div>` +
       `<div class="sig-role">The Company</div>` +
       `<div class="sig-name">${this.esc(ContractDocumentService.COMPANY_NAME)}</div>` +
@@ -468,7 +468,7 @@ export class ContractDocumentService {
       .join('');
 
     const recital =
-      `<p>This Creator Content Agreement (the &ldquo;Agreement&rdquo;) is made and entered into as of ` +
+      `<p>This Creator Services Agreement (the &ldquo;Agreement&rdquo;) is made and entered into as of ` +
       `<strong>${this.fmtDate(effectiveDate) || '____________________'}</strong> (the &ldquo;Effective Date&rdquo;) by and ` +
       `between the parties identified below. The parties agree as follows:</p>`;
 
@@ -480,15 +480,13 @@ export class ContractDocumentService {
       .filter(Boolean)
       .join(' &nbsp;·&nbsp; ');
 
-    const generatedOn = this.fmtDate(new Date());
-
     return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<title>Creator Content Agreement${contract.contractRef ? ' · ' + this.esc(contract.contractRef) : ''}</title>
+<title>Creator Services Agreement${contract.contractRef ? ' · ' + this.esc(contract.contractRef) : ''}</title>
 <style>
   :root { color-scheme: light; }
   * { box-sizing: border-box; }
@@ -557,8 +555,6 @@ export class ContractDocumentService {
   .sig-block { }
   .sig-mark { height: 64px; display: flex; align-items: flex-end; }
   .sig-img { max-height: 64px; max-width: 100%; }
-  .company-sig { display: flex; align-items: flex-end; height: 64px; }
-  .company-sig svg { height: 58px; width: auto; display: block; }
   .sig-line-fill { height: 64px; }
   .sig-rule { border-top: 1px solid #18181b; margin-top: 2px; }
   .sig-role { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: #71717a; margin-top: 6px;
@@ -588,13 +584,13 @@ export class ContractDocumentService {
 </head>
 <body>
   <div class="toolbar">
-    <span class="t-title">Creator Content Agreement</span>
+    <span class="t-title">Creator Services Agreement</span>
     <button type="button" onclick="window.print()">Print / Save as PDF</button>
   </div>
   <div class="sheet">
     <header class="doc-head">
       <div class="wordmark">${ContractDocumentService.WORDMARK}</div>
-      <h1>Creator Content Agreement</h1>
+      <h1>Creator Services Agreement</h1>
       <div class="doc-meta">${refLine}</div>
     </header>
     <div class="recital">${recital}</div>
@@ -602,8 +598,6 @@ export class ContractDocumentService {
     ${clauseHtml}
     ${this.signatureBlock(creator, contract)}
     <footer class="doc-foot">
-      This Agreement was generated from the Influence Creator Database on ${generatedOn}. It reflects the terms on
-      record for the signed contract and excludes confidential banking and payout information, which is held separately.
       Confidential — for internal and party use only.
     </footer>
   </div>
