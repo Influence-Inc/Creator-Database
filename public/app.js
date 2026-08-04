@@ -190,29 +190,22 @@
       });
   }
 
-  // URL of a contract's compliant legal document (a Creator Content Agreement,
-  // server-rendered, bank/payout details excluded). `download` flips it to a
-  // file attachment instead of an inline page.
-  function contractDocUrl(contractId, download) {
+  // URL of a contract's compliant legal document (a Creator Services Agreement,
+  // server-rendered, bank/payout details excluded). `opts.print` returns a page
+  // that auto-opens the browser's Print → Save as PDF dialog on load.
+  function contractDocUrl(contractId, opts) {
+    opts = opts || {};
+    var qs = [];
+    if (opts.download) qs.push('download=1');
+    if (opts.print) qs.push('print=1');
     return (
       '/roster/' +
       encodeURIComponent(state.selectedId) +
       '/contracts/' +
       encodeURIComponent(contractId) +
       '/document' +
-      (download ? '?download=1' : '')
+      (qs.length ? '?' + qs.join('&') : '')
     );
-  }
-  // Trigger a same-origin download (cookies ride along); the server also sets
-  // Content-Disposition: attachment so the browser saves rather than navigates.
-  function downloadDoc(url) {
-    var a = document.createElement('a');
-    a.href = url;
-    a.rel = 'noopener';
-    a.setAttribute('download', '');
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
   }
 
   // Fetch the full (unredacted) contracts for the selected creator, once, then
@@ -674,7 +667,7 @@
       '" title="Open the compliant legal contract in a new tab">Legal document ↗</button>' +
       '<button class="linklike" data-act="download-doc" data-cid="' +
       esc(c.id) +
-      '" title="Download the contract (open, then Print → Save as PDF)">Download</button>';
+      '" title="Open the contract and save it as a PDF (Print → Save as PDF)">Download PDF</button>';
 
     return (
       '<div class="modal-overlay">' +
@@ -1095,11 +1088,14 @@
     }
     if (act === 'view-doc') {
       // Open synchronously inside the click handler so popup blockers allow it.
-      window.open(contractDocUrl(el.getAttribute('data-cid'), false), '_blank', 'noopener');
+      window.open(contractDocUrl(el.getAttribute('data-cid')), '_blank', 'noopener');
       return;
     }
     if (act === 'download-doc') {
-      downloadDoc(contractDocUrl(el.getAttribute('data-cid'), true));
+      // Open the print-ready page; it auto-invokes the browser's Print → Save
+      // as PDF dialog once loaded. Opened synchronously so popup blockers allow
+      // it, and same-origin so cookies ride along.
+      window.open(contractDocUrl(el.getAttribute('data-cid'), { print: true }), '_blank', 'noopener');
       return;
     }
     if (act === 'close-modal') return setState({ modalContractId: null });
