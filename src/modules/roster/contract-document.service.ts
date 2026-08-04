@@ -23,7 +23,19 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 @Injectable()
 export class ContractDocumentService {
   /** The contracting party the platform acts as (the agency of record). */
-  private static readonly COMPANY_NAME = 'Influence Inc.';
+  private static readonly COMPANY_NAME = 'Mighty Crew (operating as Influence)';
+
+  /** The Company's registered address, shown in the parties block. */
+  private static readonly COMPANY_ADDRESS =
+    'SF, Flat No. 207, Venkatadri Residency, Concord Layout, Rajarajeshwari Nagar, Bengaluru, Bengaluru Urban, Karnataka, 560098, India';
+
+  /** The person who countersigns on the Company's behalf. */
+  private static readonly COMPANY_SIGNATORY = 'Tharun R';
+
+  // The authorised signatory's signature, embedded as inline SVG so the document
+  // stays self-contained (no external asset, no base64 blob) and scales crisply.
+  private static readonly COMPANY_SIGNATURE_SVG =
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 340" fill="none" stroke="#111111" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"><path d="M40 300 C 260 275, 470 175, 690 120"/><path d="M120 150 C 300 205, 430 198, 690 96"/><path d="M175 252 C 156 120, 182 66, 200 70 C 216 74, 206 200, 180 260"/><path d="M180 260 C 200 168, 226 170, 234 236 C 238 276, 264 280, 272 232 C 278 196, 302 194, 310 240 C 314 276, 340 282, 348 236"/><path d="M232 240 C 208 322, 232 376, 268 362 C 300 350, 290 266, 252 248"/><path d="M302 238 C 280 322, 304 378, 340 362 C 372 349, 360 264, 324 248"/><path d="M470 236 C 486 178, 522 182, 522 222 C 522 252, 486 252, 482 226 C 508 238, 532 264, 544 296"/><circle cx="604" cy="206" r="5" fill="#111111" stroke="none"/></svg>';
 
   private static readonly CURRENCY_SYMBOL: Record<string, string> = {
     USD: '$',
@@ -153,6 +165,7 @@ export class ContractDocumentService {
       `<div class="party">` +
       `<div class="party-role">The Company</div>` +
       `<div class="party-name">${this.esc(ContractDocumentService.COMPANY_NAME)}</div>` +
+      detail('Address', this.esc(ContractDocumentService.COMPANY_ADDRESS)) +
       detail(
         'Acting for',
         brand
@@ -175,11 +188,21 @@ export class ContractDocumentService {
   }
 
   /** Build the ordered list of substantive clauses. */
-  private clauses(contract: Contract): Array<{ title: string; body: string }> {
+  private clauses(creator: Creator, contract: Contract): Array<{ title: string; body: string }> {
     const brand = contract.brandName ? this.esc(contract.brandName) : 'the Brand';
     const campaign = contract.campaignName
       ? `the &ldquo;${this.esc(contract.campaignName)}&rdquo; campaign`
       : 'the applicable campaign';
+
+    // Scope-of-services wording: the campaign name and the Creator's country of
+    // performance (from the signer/creator address). Both fall back gracefully.
+    const scopeCampaign = contract.campaignName
+      ? `${this.esc(contract.campaignName)} campaign`
+      : 'applicable campaign';
+    const country = contract.addressCountry || creator.addressCountry;
+    const scopeCountry = country
+      ? this.esc(country)
+      : 'the Creator&rsquo;s country of residence (outside India)';
 
     const deliverables = this.orText(
       contract.deliverables,
@@ -231,6 +254,13 @@ export class ContractDocumentService {
           `<p>The Company engages the Creator, and the Creator accepts the engagement, to create and publish the ` +
           `content described in this Agreement (the &ldquo;Content&rdquo;) in connection with ${campaign} for ${brand}. ` +
           `The Creator shall perform the Services with reasonable skill and care and in a professional manner.</p>`,
+      },
+      {
+        title: 'Scope of Services',
+        body:
+          `<p>The Creator shall create short-form video content as part of the ${scopeCampaign}, including ` +
+          `ideation, filming, editing, and publishing of such content.</p>` +
+          `<p>All services under this Agreement shall be performed entirely outside India, from ${scopeCountry}.</p>`,
       },
       {
         title: 'Deliverables & Content',
@@ -401,11 +431,12 @@ export class ContractDocumentService {
       (signedDate ? `<div class="sig-date">Date: ${this.fmtDate(signedDate)}</div>` : '') +
       `</div>` +
       `<div class="sig-block">` +
-      `<div class="sig-mark"><div class="sig-line-fill"></div></div>` +
+      `<div class="sig-mark"><span class="company-sig">${ContractDocumentService.COMPANY_SIGNATURE_SVG}</span></div>` +
       `<div class="sig-rule"></div>` +
       `<div class="sig-role">The Company</div>` +
       `<div class="sig-name">${this.esc(ContractDocumentService.COMPANY_NAME)}</div>` +
-      `<div class="sig-date">Date: ______________________</div>` +
+      `<div class="sig-signatory">By: ${this.esc(ContractDocumentService.COMPANY_SIGNATORY)}, Authorised Signatory</div>` +
+      `<div class="sig-date">Date: ${signedDate ? this.fmtDate(signedDate) : '______________________'}</div>` +
       `</div>` +
       `</div>`
     );
@@ -425,7 +456,7 @@ export class ContractDocumentService {
           ? 'Signed'
           : 'Pending';
 
-    const clauses = this.clauses(contract);
+    const clauses = this.clauses(creator, contract);
     const clauseHtml = clauses
       .map(
         (c, i) =>
@@ -517,7 +548,7 @@ export class ContractDocumentService {
   .clause { margin: 0 0 16px; }
   .clause h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .03em; margin: 0 0 6px;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-  .clause-no { color: #6d5efc; margin-right: 4px; }
+  .clause-no { color: #18181b; margin-right: 4px; }
   .clause p { margin: 0 0 8px; text-align: justify; }
   .clause ul { margin: 6px 0 8px; padding-left: 22px; }
   .clause li { margin: 3px 0; }
@@ -526,11 +557,15 @@ export class ContractDocumentService {
   .sig-block { }
   .sig-mark { height: 64px; display: flex; align-items: flex-end; }
   .sig-img { max-height: 64px; max-width: 100%; }
+  .company-sig { display: flex; align-items: flex-end; height: 64px; }
+  .company-sig svg { height: 58px; width: auto; display: block; }
   .sig-line-fill { height: 64px; }
   .sig-rule { border-top: 1px solid #18181b; margin-top: 2px; }
   .sig-role { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: #71717a; margin-top: 6px;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
   .sig-name { font-weight: 700; font-size: 15px; margin-top: 2px; }
+  .sig-signatory { font-size: 12px; color: #18181b; font-weight: 500; margin-top: 2px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
   .sig-date { font-size: 12px; color: #52525b; margin-top: 3px;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
 

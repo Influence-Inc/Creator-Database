@@ -106,6 +106,29 @@ describe('ContractDocumentService', () => {
     expect(html).toContain('data:image/png;base64,');
   });
 
+  it('reflects the Mighty Crew / Influence company details, scope clause, and countersignature', async () => {
+    const { svc } = makeService(buildCreator(), buildContract());
+    const { html } = await svc.render('c1', 'k1');
+
+    // Company party: name + registered address.
+    expect(html).toContain('Mighty Crew (operating as Influence)');
+    expect(html).toContain('Venkatadri Residency');
+    expect(html).toContain('Karnataka, 560098, India');
+
+    // Scope of Services clause, with the campaign name and country filled in.
+    expect(html).toContain('Scope of Services');
+    expect(html).toContain('short-form video content as part of the Summer Splash campaign');
+    expect(html).toContain('performed entirely outside India, from USA');
+
+    // Company countersignature: Tharun R + an embedded signature mark.
+    expect(html).toContain('By: Tharun R, Authorised Signatory');
+    expect(html).toContain('class="company-sig"');
+
+    // Clause numbering is black, not purple.
+    expect(html).toContain('.clause-no { color: #18181b');
+    expect(html).not.toContain('.clause-no { color: #6d5efc');
+  });
+
   it('NEVER includes the creator bank / payout details', async () => {
     const { svc } = makeService(buildCreator(), buildContract());
     const { html } = await svc.render('c1', 'k1');
