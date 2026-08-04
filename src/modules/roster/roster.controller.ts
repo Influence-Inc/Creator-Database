@@ -44,24 +44,29 @@ export class RosterController {
 
   /**
    * A single signed contract rendered as a compliant legal document (a Creator
-   * Content Agreement) that the admin can view or download and save as PDF.
+   * Services Agreement) that the admin can view or save as PDF.
    *
    * The document EXCLUDES the creator's bank / payout details by design — those
    * are held separately. Same auth as every other read (admin session or
    * x-api-key via the global ReadAccessGuard). `?download=1` returns it as a
-   * file attachment instead of rendering inline.
+   * file attachment; `?print=1` renders it inline and auto-opens the browser's
+   * print dialog so the admin can save it as a PDF.
    */
   @Get(':id/contracts/:contractId/document')
   async contractDocument(
     @Param('id') id: string,
     @Param('contractId') contractId: string,
     @Query('download') download: string | undefined,
+    @Query('print') print: string | undefined,
     @Res({ passthrough: true }) res: Response,
   ): Promise<string> {
-    const { filename, html } = await this.contractDocs.render(id, contractId);
+    const isSet = (v: string | undefined) => v !== undefined && v !== '0' && v !== 'false';
+    const wantsPrint = isSet(print);
+    const { filename, html } = await this.contractDocs.render(id, contractId, {
+      print: wantsPrint,
+    });
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    const wantsDownload = download !== undefined && download !== '0' && download !== 'false';
-    if (wantsDownload) {
+    if (isSet(download)) {
       res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     }
     return html;

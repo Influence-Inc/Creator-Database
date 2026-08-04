@@ -57,7 +57,11 @@ export class ContractDocumentService {
    * Load a creator's contract and render the legal document for it. Throws
    * NotFound if the creator or the contract (scoped to that creator) is missing.
    */
-  async render(creatorId: string, contractId: string): Promise<{ filename: string; html: string }> {
+  async render(
+    creatorId: string,
+    contractId: string,
+    opts: { print?: boolean } = {},
+  ): Promise<{ filename: string; html: string }> {
     const creator = await this.prisma.creator.findUnique({ where: { id: creatorId } });
     if (!creator) throw new NotFoundException(`Creator ${creatorId} not found`);
 
@@ -70,7 +74,10 @@ export class ContractDocumentService {
       throw new NotFoundException(`Contract ${contractId} not found for creator ${creatorId}`);
     }
 
-    return { filename: this.filename(creator, contract), html: this.renderHtml(creator, contract) };
+    return {
+      filename: this.filename(creator, contract),
+      html: this.renderHtml(creator, contract, opts),
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -446,7 +453,7 @@ export class ContractDocumentService {
   // Document assembly
   // -------------------------------------------------------------------------
 
-  private renderHtml(creator: Creator, contract: Contract): string {
+  private renderHtml(creator: Creator, contract: Contract, opts: { print?: boolean } = {}): string {
     const effectiveDate =
       contract.signedAt || contract.signerSignedDate || contract.createdAt || null;
     const statusLabel =
@@ -471,6 +478,15 @@ export class ContractDocumentService {
       `<p>This Creator Services Agreement (the &ldquo;Agreement&rdquo;) is made and entered into as of ` +
       `<strong>${this.fmtDate(effectiveDate) || '____________________'}</strong> (the &ldquo;Effective Date&rdquo;) by and ` +
       `between the parties identified below. The parties agree as follows:</p>`;
+
+    // When opened for download (print mode), auto-invoke the browser's print
+    // dialog once everything — including the signature image — has loaded, so
+    // the admin lands straight on "Save as PDF". The tab closes itself after.
+    const printScript = opts.print
+      ? `<script>window.addEventListener('load',function(){window.focus();` +
+        `window.addEventListener('afterprint',function(){window.close();});` +
+        `setTimeout(function(){window.print();},200);});</script>`
+      : '';
 
     const refLine = [
       contract.contractRef ? `Reference: ${this.esc(contract.contractRef)}` : '',
@@ -601,6 +617,7 @@ export class ContractDocumentService {
       Confidential — for internal and party use only.
     </footer>
   </div>
+  ${printScript}
 </body>
 </html>`;
   }

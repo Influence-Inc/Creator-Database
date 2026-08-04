@@ -83,11 +83,11 @@ function makeService(creator: Creator | null, contract: Contract | null) {
 }
 
 describe('ContractDocumentService', () => {
-  it('renders a legal Creator Content Agreement with the key contract terms', async () => {
+  it('renders a legal Creator Services Agreement with the key contract terms', async () => {
     const { svc } = makeService(buildCreator(), buildContract());
     const { html } = await svc.render('c1', 'k1');
 
-    expect(html).toContain('Creator Content Agreement');
+    expect(html).toContain('Creator Services Agreement');
     expect(html).toContain('Acme Beverages');
     expect(html).toContain('Summer Splash');
     expect(html).toContain('2 Reels and 3 Stories');
@@ -120,9 +120,10 @@ describe('ContractDocumentService', () => {
     expect(html).toContain('short-form video content as part of the Summer Splash campaign');
     expect(html).toContain('performed entirely outside India, from USA');
 
-    // Company countersignature: Tharun R + an embedded signature mark.
+    // Company countersignature: Tharun R + the signatory's signature image.
     expect(html).toContain('By: Tharun R, Authorised Signatory');
-    expect(html).toContain('class="company-sig"');
+    expect(html).toContain('Tharun%20Signature');
+    expect(html).toContain('alt="Company signature"');
 
     // Clause numbering is black, not purple.
     expect(html).toContain('.clause-no { color: #18181b');
@@ -170,7 +171,7 @@ describe('ContractDocumentService', () => {
   it('produces a safe, descriptive download filename', async () => {
     const { svc } = makeService(buildCreator(), buildContract());
     const { filename } = await svc.render('c1', 'k1');
-    expect(filename).toMatch(/^Creator-Content-Agreement-.*\.html$/);
+    expect(filename).toMatch(/^Creator-Services-Agreement-.*\.html$/);
     expect(filename).not.toMatch(/[^A-Za-z0-9._-]/); // no unsafe chars
   });
 
@@ -194,8 +195,21 @@ describe('ContractDocumentService', () => {
     });
     const { svc } = makeService(buildCreator(), sparse);
     const { html } = await svc.render('c1', 'k1');
-    expect(html).toContain('Creator Content Agreement');
+    expect(html).toContain('Creator Services Agreement');
     expect(html).toContain('campaign brief'); // deliverables fallback text
+  });
+
+  it('injects an auto-print script only when print mode is requested', async () => {
+    const { svc } = makeService(buildCreator(), buildContract());
+
+    // The toolbar always carries a manual print button; the distinguishing
+    // marker of print mode is the load-triggered auto-print script.
+    const inline = await svc.render('c1', 'k1');
+    expect(inline.html).not.toContain("addEventListener('afterprint'");
+
+    const forPrint = await svc.render('c1', 'k1', { print: true });
+    expect(forPrint.html).toContain("addEventListener('afterprint'");
+    expect(forPrint.html).toContain('window.print()');
   });
 
   it('throws NotFound for a missing creator', async () => {
