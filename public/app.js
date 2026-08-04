@@ -190,6 +190,31 @@
       });
   }
 
+  // URL of a contract's compliant legal document (a Creator Content Agreement,
+  // server-rendered, bank/payout details excluded). `download` flips it to a
+  // file attachment instead of an inline page.
+  function contractDocUrl(contractId, download) {
+    return (
+      '/roster/' +
+      encodeURIComponent(state.selectedId) +
+      '/contracts/' +
+      encodeURIComponent(contractId) +
+      '/document' +
+      (download ? '?download=1' : '')
+    );
+  }
+  // Trigger a same-origin download (cookies ride along); the server also sets
+  // Content-Disposition: attachment so the browser saves rather than navigates.
+  function downloadDoc(url) {
+    var a = document.createElement('a');
+    a.href = url;
+    a.rel = 'noopener';
+    a.setAttribute('download', '');
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+
   // Fetch the full (unredacted) contracts for the selected creator, once, then
   // run `cb`. Used by both "reveal account number" and "view signed contract".
   function loadContractsFull(cb) {
@@ -642,6 +667,14 @@
     var link = c.contractUrl
       ? '<a href="' + esc(c.contractUrl) + '" target="_blank" rel="noopener" class="linklike">Open original ↗</a>'
       : '';
+    // View / download the compliant legal contract (bank details excluded).
+    var docActions =
+      '<button class="linklike" data-act="view-doc" data-cid="' +
+      esc(c.id) +
+      '" title="Open the compliant legal contract in a new tab">Legal document ↗</button>' +
+      '<button class="linklike" data-act="download-doc" data-cid="' +
+      esc(c.id) +
+      '" title="Download the contract (open, then Print → Save as PDF)">Download</button>';
 
     return (
       '<div class="modal-overlay">' +
@@ -649,6 +682,7 @@
       '<div class="modal-head"><div style="font-size:16px;font-weight:700">Signed contract' +
       multi +
       '</div><div style="display:flex;gap:16px;align-items:center">' +
+      docActions +
       link +
       '<button class="modal-x" data-act="close-modal" aria-label="Close">✕</button></div></div>' +
       '<div class="modal-body">' +
@@ -1058,6 +1092,15 @@
       return loadContractsFull(function () {
         setState({ modalContractId: idx });
       });
+    }
+    if (act === 'view-doc') {
+      // Open synchronously inside the click handler so popup blockers allow it.
+      window.open(contractDocUrl(el.getAttribute('data-cid'), false), '_blank', 'noopener');
+      return;
+    }
+    if (act === 'download-doc') {
+      downloadDoc(contractDocUrl(el.getAttribute('data-cid'), true));
+      return;
     }
     if (act === 'close-modal') return setState({ modalContractId: null });
     // ---- inline edit of contact + payment ----

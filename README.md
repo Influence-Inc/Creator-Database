@@ -20,8 +20,13 @@ deliverables & rights, performance, campaigns), in light and dark themes. The
 UI reads from a purpose-built `/roster` read-model that composes the master
 record with its stats snapshots and contracts; sensitive payout data (full
 account numbers, IBANs, signature images) is redacted server-side and never
-sent to the browser. Otherwise this is a REST + background-worker service,
-designed to be deployed on **Railway** with a PostgreSQL database.
+sent to the browser. From the **Contract & Legal** tab, any past signed
+contract can be **viewed or downloaded as a compliant, print-ready legal
+agreement** (a "Creator Content Agreement") — parties, deliverables, usage
+rights, exclusivity, compensation terms, the signer's identity + address and
+the drawn signature, but **never the creator's bank/payout details**, which are
+held separately. Otherwise this is a REST + background-worker service, designed
+to be deployed on **Railway** with a PostgreSQL database.
 
 **Auth.** Set `ADMIN_PASSWORD` (and optionally `ADMIN_USERNAME`,
 `AUTH_SESSION_SECRET`) to require sign-in: `POST /auth/login` checks the
