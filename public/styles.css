@@ -351,15 +351,20 @@ button {
   align-items: center;
   gap: 8px;
   height: 40px;
-  padding: 0 14px;
+  padding: 0 10px 0 14px;
   border: 1px solid var(--border);
   border-radius: 9px;
   background: var(--surface-alt);
-  width: 260px;
+  /* Wide enough for the placeholder AND the trailing shortcut chip. */
+  width: 320px;
+  max-width: 100%;
 }
 .search span {
   color: var(--text-faint);
   font-size: 13px;
+}
+.search .search-i {
+  flex: none;
 }
 .search input {
   border: none;
@@ -367,7 +372,9 @@ button {
   outline: none;
   color: var(--text);
   font-size: 13.5px;
-  width: 100%;
+  /* min-width:0 lets the input shrink instead of pushing the chip out. */
+  flex: 1;
+  min-width: 0;
 }
 .chip {
   height: 40px;
@@ -1198,6 +1205,21 @@ button {
   line-height: 1;
 }
 .search-x:hover {
+  color: var(--text);
+}
+#search-slot {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+/* Shortcut hint inside the search box — the roster's only search affordance,
+   so it's also where the quick-search palette is advertised. */
+.search-kbd {
+  cursor: pointer;
+  white-space: nowrap;
+}
+.search-kbd:hover {
+  border-color: var(--text-faint);
   color: var(--text);
 }
 

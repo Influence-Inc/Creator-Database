@@ -113,6 +113,14 @@
   }
 
   // ---- helpers ------------------------------------------------------------
+  // '⌘' on Apple hardware, 'Ctrl ' elsewhere — a Windows admin shouldn't be
+  // told to press a key their keyboard doesn't have.
+  var IS_APPLE = /Mac|iPhone|iPad|iPod/.test(
+    (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || navigator.userAgent,
+  );
+  function modKeyLabel() {
+    return IS_APPLE ? '⌘' : 'Ctrl ';
+  }
   function esc(s) {
     if (s === null || s === undefined) return '';
     return String(s).replace(/[&<>"']/g, function (c) {
@@ -586,10 +594,15 @@
       '</div>' +
       '</div>' +
       '<div class="right">' +
-      '<button class="cmdk-btn" data-act="open-cmdk" title="Search (Cmd+K)">' +
-      '<span>⚲</span><span class="cmdk-btn-t">Search</span>' +
-      '<span class="cmdk-kbd cmdk-kbd-sm">⌘K</span>' +
-      '</button>' +
+      // Only shown where there's no search box on the page. On the roster the
+      // inline filter is the search affordance, and a second one in the topbar
+      // just reads as two boxes doing the same job.
+      (inProfile
+        ? '<button class="cmdk-btn" data-act="open-cmdk" title="Search creators (' + modKeyLabel() + 'K)">' +
+          '<span>⚲</span><span class="cmdk-btn-t">Search</span>' +
+          '<span class="cmdk-kbd cmdk-kbd-sm">' + modKeyLabel() + 'K</span>' +
+          '</button>'
+        : '') +
       '<button class="icon-btn" data-act="theme">' +
       themeIcon() +
       '</button>' +
@@ -696,6 +709,16 @@
     return rosterSummary(list) + '<div class="table">' + rosterHead() + rows + '</div>';
   }
 
+  // Trailing control inside the search box. The two states are mutually
+  // exclusive so the box never shows both a shortcut hint and a clear button.
+  function searchSlot() {
+    return state.search
+      ? '<button class="search-x" data-act="clear-search" title="Clear search">✕</button>'
+      : '<button class="cmdk-kbd search-kbd" data-act="open-cmdk" title="Quick search — jump straight to a creator">' +
+        modKeyLabel() +
+        'K</button>';
+  }
+
   function rosterView() {
     var data = state.roster;
     var head =
@@ -705,10 +728,12 @@
       '</div></div>' +
       '<div class="toolbar">' +
       '<div class="search"><span class="search-i">⚲</span>' +
-      '<input id="search" type="text" placeholder="Search name, @handle, platform…" value="' +
+      '<input id="search" type="text" placeholder="Search name or @handle…" value="' +
       esc(state.search) +
       '" autocomplete="off">' +
-      (state.search ? '<button class="search-x" data-act="clear-search" title="Clear">✕</button>' : '') +
+      '<span id="search-slot">' +
+      searchSlot() +
+      '</span>' +
       '</div>' +
       usageChips() +
       '</div></div>';
@@ -1672,22 +1697,10 @@
       var sub = document.getElementById('roster-count');
       if (sub) sub.textContent = visibleCreators().length + ' of ' + state.roster.total + ' creators';
       if (body) body.innerHTML = rosterBody();
-      // The clear (✕) button lives inside the search box, which we deliberately
-      // don't re-render — toggle it directly instead.
-      var x = root.querySelector('.search-x');
-      if (state.search && !x) {
-        var box = root.querySelector('.search');
-        if (box) {
-          var btn = document.createElement('button');
-          btn.className = 'search-x';
-          btn.setAttribute('data-act', 'clear-search');
-          btn.title = 'Clear';
-          btn.textContent = '✕';
-          box.appendChild(btn);
-        }
-      } else if (!state.search && x) {
-        x.parentNode.removeChild(x);
-      }
+      // The search box itself is deliberately not re-rendered (that would drop
+      // focus), so refresh just its trailing control.
+      var slot = document.getElementById('search-slot');
+      if (slot) slot.innerHTML = searchSlot();
     }
   });
 
