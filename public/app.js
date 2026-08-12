@@ -115,8 +115,15 @@
   // ---- helpers ------------------------------------------------------------
   // '⌘' on Apple hardware, 'Ctrl ' elsewhere — a Windows admin shouldn't be
   // told to press a key their keyboard doesn't have.
-  var IS_APPLE = /Mac|iPhone|iPad|iPod/.test(
-    (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || navigator.userAgent,
+  // Case-insensitive on purpose: navigator.userAgentData.platform reports
+  // 'macOS' (lower-case m) while navigator.platform reports 'MacIntel', and
+  // userAgentData wins where both exist — a case-sensitive /Mac/ silently told
+  // every Mac user to press Ctrl.
+  var IS_APPLE = /mac|iphone|ipad|ipod/i.test(
+    (navigator.userAgentData && navigator.userAgentData.platform) ||
+      navigator.platform ||
+      navigator.userAgent ||
+      '',
   );
   function modKeyLabel() {
     return IS_APPLE ? '⌘' : 'Ctrl ';
@@ -741,7 +748,7 @@
     var body =
       data === null
         ? '<div class="table">' + rosterHead() + skeletonRows(6) + '</div>'
-        : '<div id="roster-body">' + rosterBody() + '</div>';
+        : '<div id="roster-body" class="roster-body">' + rosterBody() + '</div>';
 
     return (
       '<div class="app">' + topbar() + '<div class="page list fade">' + head + body + '</div></div>'

@@ -1167,6 +1167,13 @@ button {
   max-width: 40vw;
 }
 /* ---- Roster summary tiles --------------------------------------------- */
+/* The summary + table are re-rendered together as one block, so the page's
+   own flex gap doesn't separate them — this wrapper supplies it. */
+.roster-body {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
 .summary-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
