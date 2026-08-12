@@ -20,7 +20,6 @@
     loggingIn: false,
     search: '',
     usageFilter: 'Used', // Used (default) | Unused | All
-    expandedId: null,
     selectedId: null,
     activeTab: 'performance',
     // Inline edit state for the Contact & Payment cards.
@@ -38,9 +37,70 @@
     contractsLoading: false,
     revealPay: false,
     modalContractId: null,
+    // Cmd+K command palette — universal search across the loaded roster.
+    cmdkOpen: false,
+    cmdkQuery: '',
+    cmdkIndex: 0,
   };
 
+  // Tabs surfaced in the URL (profile view). Kept in sync with TAB_DEFS below.
+  var TAB_KEYS = ['performance', 'contract', 'campaigns'];
+
   var root = document.getElementById('root');
+
+  // ---- routing (hash-based) -----------------------------------------------
+  // Hash routes: '#/' → roster, '#/c/:id' → profile (default tab),
+  // '#/c/:id/<tab>' → profile with tab. Hash routing keeps deep-links working
+  // without needing an SPA fallback on the API server.
+  function parseHash() {
+    var h = String(window.location.hash || '').replace(/^#/, '');
+    if (!h || h === '/') return { selectedId: null, activeTab: 'performance' };
+    var parts = h.split('/').filter(Boolean); // ['c', ':id', ':tab?']
+    if (parts[0] === 'c' && parts[1]) {
+      var tab = parts[2] && TAB_KEYS.indexOf(parts[2]) >= 0 ? parts[2] : 'performance';
+      return { selectedId: decodeURIComponent(parts[1]), activeTab: tab };
+    }
+    return { selectedId: null, activeTab: 'performance' };
+  }
+  function hashFor(sel, tab) {
+    if (!sel) return '#/';
+    var t = tab && tab !== 'performance' ? '/' + tab : '';
+    return '#/c/' + encodeURIComponent(sel) + t;
+  }
+  // Sync the URL to the current state. Suppressed while we're applying a hash
+  // that the user typed / used the back button on, so we don't push a dup entry.
+  var suppressHashSync = false;
+  function syncUrlToState() {
+    if (state.view !== 'app') return;
+    var next = hashFor(state.selectedId, state.activeTab);
+    if (next === (window.location.hash || '#/')) return;
+    suppressHashSync = true;
+    // pushState avoids reloading; the '#' change also updates history normally.
+    window.history.pushState(null, '', next);
+    suppressHashSync = false;
+  }
+  // Apply the current URL to state (used on boot and on back/forward).
+  function applyHashToState() {
+    if (state.view !== 'app') return;
+    var r = parseHash();
+    var changed = r.selectedId !== state.selectedId || r.activeTab !== state.activeTab;
+    if (!changed) return;
+    state.selectedId = r.selectedId;
+    state.activeTab = r.activeTab;
+    state.editContact = false;
+    state.editPayment = false;
+    state.saveError = null;
+    if (r.selectedId) {
+      if (!state.profile || state.profile.id !== r.selectedId) {
+        loadProfile(r.selectedId);
+      } else {
+        render();
+      }
+    } else {
+      state.profile = null;
+      render();
+    }
+  }
 
   // ---- helpers ------------------------------------------------------------
   function esc(s) {
@@ -132,6 +192,7 @@
 
   function setState(patch) {
     Object.assign(state, patch);
+    syncUrlToState();
     render();
   }
 
@@ -442,6 +503,10 @@
       '<div class="crumb">Creator Database</div>' +
       '</div>' +
       '<div class="right">' +
+      '<button class="cmdk-btn" data-act="open-cmdk" title="Search (Cmd+K)">' +
+      '<span>⚲</span><span class="cmdk-btn-t">Search</span>' +
+      '<span class="cmdk-kbd cmdk-kbd-sm">⌘K</span>' +
+      '</button>' +
       '<button class="icon-btn" data-act="theme">' +
       themeIcon() +
       '</button>' +
@@ -503,26 +568,14 @@
   }
 
   function rosterRow(c) {
-    var expanded = state.expandedId === c.id;
     var plats = (c.platforms || [])
       .map(function (p) {
         return '<div class="plat">' + esc(p) + '</div>';
       })
       .join('');
-    var detail = expanded
-      ? '<div class="row-detail fade">' +
-        kv('Active contracts', String(c.activeContracts)) +
-        kv('Last campaign', esc(c.lastCampaign || '—')) +
-        '<button class="btn-accent" style="margin-left:auto" data-act="open" data-id="' +
-        esc(c.id) +
-        '">View full profile →</button>' +
-        '</div>'
-      : '';
+    // Whole row is the click target — a single click opens the profile.
     return (
-      '<div>' +
-      '<div class="roster-grid roster-row' +
-      (expanded ? ' expanded' : '') +
-      '" data-act="toggle" data-id="' +
+      '<div class="roster-grid roster-row" data-act="open" data-id="' +
       esc(c.id) +
       '">' +
       '<div class="creator-cell"><div class="pfp">' +
@@ -548,11 +601,7 @@
       '<div class="cell hide-sm">' +
       fmtPct(c.engagement) +
       '</div>' +
-      '<div class="chev' +
-      (expanded ? ' open' : '') +
-      '">›</div>' +
-      '</div>' +
-      detail +
+      '<div class="chev">›</div>' +
       '</div>'
     );
   }
@@ -1051,6 +1100,127 @@
     return '<div class="section-table"><div class="st-title">Campaigns · deliverables &amp; rights</div>' + head + rows + '</div>';
   }
 
+  // ---- command palette (Cmd/Ctrl + K) -------------------------------------
+  // Universal search over the loaded roster. Ranks by field priority (handle >
+  // name > platforms > last campaign). No API round-trip — the roster is
+  // preloaded up-front, so this is instant even for large lists.
+  function cmdkResults() {
+    if (!state.roster || !state.roster.creators) return [];
+    var q = state.cmdkQuery.trim().toLowerCase();
+    var all = state.roster.creators;
+    if (!q) return all.slice(0, 12);
+    var out = [];
+    for (var i = 0; i < all.length; i++) {
+      var c = all[i];
+      var hay = [
+        c.handle || '',
+        c.name || '',
+        (c.platforms || []).join(' '),
+        c.lastCampaign || '',
+      ].map(function (s) { return String(s).toLowerCase(); });
+      var score = -1;
+      for (var j = 0; j < hay.length; j++) {
+        if (hay[j].indexOf(q) >= 0) {
+          score = j; // lower is better (0 = handle match)
+          break;
+        }
+      }
+      if (score >= 0) out.push({ c: c, score: score });
+      if (out.length > 200) break;
+    }
+    out.sort(function (a, b) { return a.score - b.score; });
+    return out.slice(0, 25).map(function (x) { return x.c; });
+  }
+  function openCmdk() {
+    state.cmdkOpen = true;
+    state.cmdkQuery = '';
+    state.cmdkIndex = 0;
+    render();
+    // Focus the input after the DOM is in place.
+    var input = document.getElementById('cmdk-input');
+    if (input) input.focus();
+  }
+  function cmdkKey(e) {
+    var results = cmdkResults();
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      state.cmdkIndex = Math.min(state.cmdkIndex + 1, Math.max(0, results.length - 1));
+      renderCmdkList();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      state.cmdkIndex = Math.max(state.cmdkIndex - 1, 0);
+      renderCmdkList();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      var pick = results[state.cmdkIndex];
+      if (!pick) return;
+      state.selectedId = pick.id;
+      state.activeTab = 'performance';
+      state.cmdkOpen = false;
+      state.cmdkQuery = '';
+      syncUrlToState();
+      loadProfile(pick.id);
+    }
+  }
+  function cmdkResultRow(c, i) {
+    var plats = (c.platforms || []).slice(0, 3).join(' · ');
+    return (
+      '<div class="cmdk-row' +
+      (i === state.cmdkIndex ? ' active' : '') +
+      '" data-act="open" data-id="' +
+      esc(c.id) +
+      '" data-cmdk-idx="' +
+      i +
+      '">' +
+      '<div class="pfp cmdk-pfp">' +
+      esc(c.initials || '') +
+      '</div>' +
+      '<div class="cmdk-main"><div class="cmdk-name">' +
+      esc(c.name || '—') +
+      '</div><div class="cmdk-sub mono">' +
+      esc(c.handle || '') +
+      (plats ? '<span class="cmdk-sep">·</span>' + esc(plats) : '') +
+      '</div></div>' +
+      '<div class="cmdk-hint mono">' +
+      (i === state.cmdkIndex ? '↵' : '') +
+      '</div>' +
+      '</div>'
+    );
+  }
+  // Rerender only the results list, so typing doesn't lose input focus.
+  function renderCmdkList() {
+    var list = document.getElementById('cmdk-list');
+    if (!list) return;
+    var results = cmdkResults();
+    if (!results.length) {
+      list.innerHTML = '<div class="cmdk-empty">No creators match.</div>';
+      return;
+    }
+    if (state.cmdkIndex >= results.length) state.cmdkIndex = 0;
+    list.innerHTML = results.map(cmdkResultRow).join('');
+  }
+  function cmdkView() {
+    if (!state.cmdkOpen) return '';
+    var results = cmdkResults();
+    var body = results.length
+      ? results.map(cmdkResultRow).join('')
+      : '<div class="cmdk-empty">No creators match.</div>';
+    return (
+      '<div class="cmdk-overlay" data-act="close-cmdk">' +
+      '<div class="cmdk" data-cmdk-stop="1">' +
+      '<div class="cmdk-head"><span class="cmdk-icon">⚲</span>' +
+      '<input id="cmdk-input" class="cmdk-input" type="text" placeholder="Search creators by name, @handle, platform…" value="' +
+      esc(state.cmdkQuery) +
+      '" autocomplete="off" spellcheck="false" />' +
+      '<span class="cmdk-kbd">esc</span></div>' +
+      '<div id="cmdk-list" class="cmdk-list">' + body + '</div>' +
+      '<div class="cmdk-foot"><span><span class="cmdk-kbd">↑</span><span class="cmdk-kbd">↓</span> navigate</span>' +
+      '<span><span class="cmdk-kbd">↵</span> open</span>' +
+      '<span><span class="cmdk-kbd">esc</span> close</span></div>' +
+      '</div></div>'
+    );
+  }
+
   // ---- render + events ----------------------------------------------------
   function render() {
     if (state.view === 'loading') {
@@ -1058,9 +1228,18 @@
     } else if (state.view === 'login') {
       root.innerHTML = loginView();
     } else if (state.selectedId) {
-      root.innerHTML = profileView();
+      root.innerHTML = profileView() + cmdkView();
     } else {
-      root.innerHTML = rosterView();
+      root.innerHTML = rosterView() + cmdkView();
+    }
+    // Refocus the palette input after a full re-render (opened via keybind or
+    // topbar button). Cursor placed at the end for continued typing.
+    if (state.cmdkOpen) {
+      var input = document.getElementById('cmdk-input');
+      if (input && document.activeElement !== input) {
+        input.focus();
+        try { input.setSelectionRange(input.value.length, input.value.length); } catch (_) {}
+      }
     }
   }
 
@@ -1113,20 +1292,26 @@
     if (act === 'save-payment') return savePayment();
     if (act === 'signout') {
       fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(function () {});
-      setState({ view: 'login', username: '', password: '', selectedId: null, expandedId: null });
+      setState({ view: 'login', username: '', password: '', selectedId: null });
       return;
     }
-    if (act === 'toggle') {
-      var id = el.getAttribute('data-id');
-      return setState({ expandedId: state.expandedId === id ? null : id });
-    }
     if (act === 'open') {
-      state.selectedId = el.getAttribute('data-id');
+      var openId = el.getAttribute('data-id');
+      state.selectedId = openId;
       state.activeTab = 'performance';
-      loadProfile(state.selectedId);
+      state.cmdkOpen = false;
+      state.cmdkQuery = '';
+      syncUrlToState();
+      loadProfile(openId);
       return;
     }
     if (act === 'back') return setState({ selectedId: null, profile: null });
+    if (act === 'open-cmdk') return openCmdk();
+    if (act === 'close-cmdk') {
+      // Only the backdrop dismisses — clicks inside the palette shouldn't close it.
+      if (e.target.closest('.cmdk')) return;
+      return setState({ cmdkOpen: false, cmdkQuery: '' });
+    }
     if (act === 'tab') {
       return setState({
         activeTab: el.getAttribute('data-tab'),
@@ -1137,9 +1322,23 @@
     }
   });
 
-  // Escape closes the signed-contract modal.
+  // Global key bindings: Cmd/Ctrl+K opens the command palette; Escape dismisses
+  // whichever overlay is open (palette first, then the contract modal).
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape' && state.modalContractId !== null) setState({ modalContractId: null });
+    var mod = e.metaKey || e.ctrlKey;
+    if (mod && !e.shiftKey && !e.altKey && (e.key === 'k' || e.key === 'K')) {
+      if (state.view !== 'app') return;
+      e.preventDefault();
+      state.cmdkOpen ? setState({ cmdkOpen: false, cmdkQuery: '' }) : openCmdk();
+      return;
+    }
+    if (e.key === 'Escape') {
+      if (state.cmdkOpen) return setState({ cmdkOpen: false, cmdkQuery: '' });
+      if (state.modalContractId !== null) return setState({ modalContractId: null });
+    }
+    if (state.cmdkOpen && (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter')) {
+      cmdkKey(e);
+    }
   });
 
   root.addEventListener('submit', function (e) {
@@ -1170,7 +1369,12 @@
           state.loginError = false;
           state.loggingIn = false;
           state.view = 'app';
+          // Honour a deep-link URL entered before the user logged in.
+          var route = parseHash();
+          state.selectedId = route.selectedId;
+          state.activeTab = route.activeTab;
           loadRoster();
+          if (route.selectedId) loadProfile(route.selectedId);
         } else {
           setState({ loginError: true, loggingIn: false });
         }
@@ -1180,8 +1384,15 @@
       });
   });
 
-  // Keep search state without re-rendering on every keystroke (preserves focus).
+  // Palette input — update query without a full re-render so focus stays.
   root.addEventListener('input', function (e) {
+    if (e.target.id === 'cmdk-input') {
+      state.cmdkQuery = e.target.value;
+      state.cmdkIndex = 0;
+      renderCmdkList();
+      return;
+    }
+    // fall through to roster search handler below
     if (e.target.id === 'search') {
       state.search = e.target.value;
       var data = state.roster;
@@ -1211,6 +1422,16 @@
     }
   });
 
+  // Back / forward navigation → re-apply the URL to state.
+  window.addEventListener('hashchange', function () {
+    if (suppressHashSync) return;
+    applyHashToState();
+  });
+  window.addEventListener('popstate', function () {
+    if (suppressHashSync) return;
+    applyHashToState();
+  });
+
   // ---- boot ---------------------------------------------------------------
   (function boot() {
     var saved = localStorage.getItem('cdb_theme');
@@ -1223,7 +1444,15 @@
       .then(function (s) {
         if (s && s.authenticated) {
           state.view = 'app';
+          // Apply the URL (deep-link) BEFORE fetching the roster so profile
+          // requests can fire in parallel. If the URL asks for a creator page,
+          // its profile loads alongside the roster.
+          var route = parseHash();
+          state.selectedId = route.selectedId;
+          state.activeTab = route.activeTab;
           loadRoster();
+          if (route.selectedId) loadProfile(route.selectedId);
+          else render();
         } else {
           setState({ view: 'login' });
         }
