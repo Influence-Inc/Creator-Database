@@ -669,31 +669,8 @@
     return new Array(n + 1).join(one);
   }
 
-  // Compact orientation tiles above the table — they describe the CURRENT
-  // filtered view, so they change as you search or switch segments.
-  function rosterSummary(list) {
-    var views = 0;
-    var camps = 0;
-    for (var i = 0; i < list.length; i++) {
-      views += list[i].views || 0;
-      camps += list[i].campaigns || 0;
-    }
-    return (
-      '<div class="summary-row">' +
-      summaryTile('Creators shown', String(list.length)) +
-      summaryTile('Campaigns', String(camps)) +
-      summaryTile('Combined views', fmtNum(views)) +
-      '</div>'
-    );
-  }
-  function summaryTile(k, v) {
-    return (
-      '<div class="sum-tile"><div class="k">' + esc(k) + '</div><div class="v">' + esc(v) + '</div></div>'
-    );
-  }
-
-  // Everything below the page header — re-rendered on its own while typing so
-  // the search box keeps focus.
+  // The table — re-rendered on its own while typing so the search box keeps
+  // focus and the caret doesn't jump.
   function rosterBody() {
     var data = state.roster;
     var list = visibleCreators();
@@ -713,7 +690,7 @@
     } else {
       rows = list.map(rosterRow).join('');
     }
-    return rosterSummary(list) + '<div class="table">' + rosterHead() + rows + '</div>';
+    return '<div class="table">' + rosterHead() + rows + '</div>';
   }
 
   // Trailing control inside the search box. The two states are mutually
@@ -748,7 +725,7 @@
     var body =
       data === null
         ? '<div class="table">' + rosterHead() + skeletonRows(6) + '</div>'
-        : '<div id="roster-body" class="roster-body">' + rosterBody() + '</div>';
+        : '<div id="roster-body">' + rosterBody() + '</div>';
 
     return (
       '<div class="app">' + topbar() + '<div class="page list fade">' + head + body + '</div></div>'
