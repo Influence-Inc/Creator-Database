@@ -19,6 +19,7 @@ function makeCreator(overrides: Partial<Creator> = {}): Creator {
     addressState: null,
     addressPostalCode: null,
     addressCountry: null,
+    paymentDetails: null,
     campaignName: null,
     campaignId: null,
     outreachStage: null,

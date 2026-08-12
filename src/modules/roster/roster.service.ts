@@ -225,7 +225,7 @@ export class RosterService {
       campaignList,
 
       contact: this.buildContact(creator, contracts),
-      payment: this.buildPayment(contracts),
+      payment: this.buildPayment(creator, contracts),
       usageRights: this.buildUsageRights(latestContract, latestStats),
       deliverables: this.buildDeliverables(contracts),
       contracts: contracts.map((ct) => ({
@@ -257,9 +257,11 @@ export class RosterService {
    * address. If a signed contract exists, the phone + address are mirrored
    * onto the LATEST contract too (so payment-of-record documents stay in sync).
    *
-   * Payout details (bank / IBAN / tax IDs) still require a contract — payment
-   * runs are attached to the specific contract they were paid against; there's
-   * no meaningful place to attach them without one.
+   * Payout details (bank / IBAN / tax IDs) are the same story: the master
+   * Creator record is the source of truth (so a creator without any signed
+   * contract can still have payout details on file), and when a signed contract
+   * exists we mirror the merged JSON onto the LATEST contract's paymentDetails
+   * so the payment-of-record documents keep matching.
    */
   async updateDetails(id: string, dto: UpdateDetailsDto): Promise<unknown> {
     const creator = await this.prisma.creator.findUnique({ where: { id } });
@@ -267,6 +269,17 @@ export class RosterService {
 
     const contact = dto.contact ?? {};
     const payment = dto.payment ?? {};
+
+    // Merged payout JSON — computed once, written to Creator first and then
+    // mirrored onto the latest contract if one exists. `''` clears a key.
+    let mergedPayment: Record<string, unknown> | null = null;
+    if (Object.keys(payment).length > 0) {
+      const existing = (creator.paymentDetails as Record<string, unknown> | null) ?? {};
+      const merged: Record<string, unknown> = { ...existing };
+      for (const [k, v] of Object.entries(payment)) merged[k] = v === '' ? undefined : v;
+      for (const k of Object.keys(merged)) if (merged[k] === undefined) delete merged[k];
+      mergedPayment = merged;
+    }
 
     // 1. Master Creator: identity + all contact fields (email/phone/address).
     //    Empty string clears the field; undefined leaves it untouched.
@@ -294,6 +307,9 @@ export class RosterService {
       creatorData.addressPostalCode = norm(a.postalCode);
       creatorData.addressCountry = norm(a.country);
     }
+    if (mergedPayment) {
+      creatorData.paymentDetails = mergedPayment as Prisma.InputJsonValue;
+    }
     if (Object.keys(creatorData).length) {
       try {
         await this.prisma.creator.update({ where: { id }, data: creatorData });
@@ -305,9 +321,10 @@ export class RosterService {
       }
     }
 
-    // 2. If a contract exists, mirror phone + address onto the LATEST contract so
-    //    the payment record stays in sync. Optional — a creator with no contract
-    //    is now perfectly valid to have contact / identity data on file.
+    // 2. If a contract exists, mirror phone + address + payout details onto the
+    //    LATEST contract so the payment-of-record stays in sync. Optional — a
+    //    creator with no contract is perfectly valid to have contact / identity
+    //    AND payout details on file (they live on the Creator record above).
     const latest = await this.prisma.contract.findFirst({
       where: { creatorId: id },
       orderBy: { createdAt: 'desc' },
@@ -325,23 +342,21 @@ export class RosterService {
         contractData.addressPostalCode = norm(a.postalCode);
         contractData.addressCountry = norm(a.country);
       }
-      if (Object.keys(payment).length > 0) {
-        const existing = (latest.paymentDetails as Record<string, unknown> | null) ?? {};
-        const merged: Record<string, unknown> = { ...existing };
-        for (const [k, v] of Object.entries(payment)) merged[k] = v === '' ? undefined : v;
-        // Drop keys explicitly cleared to empty.
-        for (const k of Object.keys(merged)) if (merged[k] === undefined) delete merged[k];
-        contractData.paymentDetails = merged as Prisma.InputJsonValue;
+      if (mergedPayment) {
+        // Merge into the contract's own existing paymentDetails (which may hold
+        // fields the Creator record hasn't seen yet — old signed-form entries),
+        // then layer the freshly-edited keys on top.
+        const contractExisting = (latest.paymentDetails as Record<string, unknown> | null) ?? {};
+        const contractMerged: Record<string, unknown> = { ...contractExisting };
+        for (const [k, v] of Object.entries(payment)) contractMerged[k] = v === '' ? undefined : v;
+        for (const k of Object.keys(contractMerged)) {
+          if (contractMerged[k] === undefined) delete contractMerged[k];
+        }
+        contractData.paymentDetails = contractMerged as Prisma.InputJsonValue;
       }
       if (Object.keys(contractData).length) {
         await this.prisma.contract.update({ where: { id: latest.id }, data: contractData });
       }
-    } else if (Object.keys(payment).length > 0) {
-      // Payment-only edit without a contract has nowhere to land. Contact /
-      // identity above already succeeded — payment is what's rejected.
-      throw new BadRequestException(
-        'This creator has no contract yet, so payout details cannot be stored',
-      );
     }
 
     return this.profile(id);
@@ -406,7 +421,12 @@ export class RosterService {
   async contractsFull(creatorId: string) {
     const creator = await this.prisma.creator.findUnique({
       where: { id: creatorId },
-      select: { id: true, creatorName: true, instagramUsername: true },
+      select: {
+        id: true,
+        creatorName: true,
+        instagramUsername: true,
+        paymentDetails: true,
+      },
     });
     if (!creator) throw new NotFoundException(`Creator ${creatorId} not found`);
 
@@ -418,6 +438,9 @@ export class RosterService {
     return {
       creatorId: creator.id,
       creatorName: creator.creatorName ?? creator.instagramUsername ?? null,
+      // Creator-level unredacted payout details — the source of truth used to
+      // seed the Payment account edit form even when no contract exists yet.
+      payment: (creator.paymentDetails as Record<string, unknown> | null) ?? null,
       contracts: contracts.map((c) => ({
         id: c.id,
         contractRef: c.contractRef,
@@ -506,9 +529,15 @@ export class RosterService {
     return digits.length >= 4 ? digits.slice(-4) : digits;
   }
 
-  private buildPayment(contracts: Contract[]) {
-    const c = contracts.find((ct) => ct.paymentDetails);
-    const pd = (c?.paymentDetails as Record<string, string> | null) ?? null;
+  private buildPayment(creator: Creator, contracts: Contract[]) {
+    // Prefer the master Creator record's payout details — that's the source of
+    // truth going forward. Fall back to the first contract that carries any
+    // paymentDetails so contracts signed before the Creator-level field existed
+    // keep rendering the same way.
+    const creatorPd = (creator.paymentDetails as Record<string, string> | null) ?? null;
+    const contractWithPay = contracts.find((ct) => ct.paymentDetails);
+    const contractPd = (contractWithPay?.paymentDetails as Record<string, string> | null) ?? null;
+    const pd = creatorPd ?? contractPd;
     if (!pd) {
       return { accountHolder: null, bankLast4: null, paymentMethod: null, taxStatus: null };
     }
@@ -517,12 +546,12 @@ export class RosterService {
     else if (pd.ifscCode) method = 'IMPS / NEFT (India)';
     else if (pd.iban || pd.swiftCode) method = 'International wire';
     else if (pd.accountNumber) method = 'Bank transfer';
-    else if (c?.paymentTerms) method = c.paymentTerms;
+    else if (contractWithPay?.paymentTerms) method = contractWithPay.paymentTerms;
 
     const taxStatus = pd.taxIdNumber || pd.panNumber ? 'Tax ID on file' : 'Not provided';
 
     return {
-      accountHolder: pd.accountHolderName ?? c?.signerName ?? null,
+      accountHolder: pd.accountHolderName ?? contractWithPay?.signerName ?? null,
       bankLast4: this.last4(pd.accountNumber ?? pd.iban),
       paymentMethod: method,
       taxStatus,

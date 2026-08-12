@@ -38,6 +38,9 @@
     // Full (unredacted) contracts for the selected creator — fetched on demand
     // when the admin reveals the account number or opens a signed contract.
     contractsFull: null,
+    // Creator-level unredacted payout details, fetched alongside contractsFull.
+    // Populated even when the creator has no signed contract yet.
+    creatorPayment: null,
     contractsLoading: false,
     revealPay: false,
     modalContractId: null,
@@ -311,6 +314,7 @@
     state.profile = null;
     state.profileLoading = true;
     state.contractsFull = null;
+    state.creatorPayment = null;
     state.contractsLoading = false;
     state.revealPay = false;
     state.modalContractId = null;
@@ -376,12 +380,18 @@
       })
       .then(function (data) {
         state.contractsFull = data && data.contracts ? data.contracts : [];
+        // Creator-level unredacted payout details (source of truth). Populated
+        // even when the creator has no signed contract yet — the Payment
+        // account card reveals + edits use this in preference to the payment
+        // dict on the first contract.
+        state.creatorPayment = data && data.payment ? data.payment : null;
         state.contractsLoading = false;
         cb();
       })
       .catch(function () {
         state.contractsLoading = false;
         state.contractsFull = state.view === 'login' ? null : [];
+        state.creatorPayment = null;
         render();
       });
   }
@@ -433,6 +443,7 @@
         }
         state.profile = res.j;
         state.contractsFull = null; // force a re-fetch of the unredacted view
+        state.creatorPayment = null;
         state.saving = false;
         state.saveError = null;
         onSuccess();
@@ -1093,8 +1104,14 @@
   // account/IBAN or Edit it (both fetch the full payout details on demand).
   function paymentCard(p) {
     var pay = p.payment || {};
-    var full =
-      state.contractsFull && state.contractsFull.length ? state.contractsFull[0].payment || {} : null;
+    // Prefer the Creator-level unredacted payout details (source of truth,
+    // populated even without a signed contract). Fall back to the payment dict
+    // on the newest contract for rows loaded before creatorPayment existed.
+    var full = state.creatorPayment
+      ? state.creatorPayment
+      : state.contractsFull && state.contractsFull.length
+      ? state.contractsFull[0].payment || {}
+      : null;
     var monoV = function (v) {
       return '<span class="mono">' + esc(v) + '</span>';
     };

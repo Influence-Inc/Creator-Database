@@ -130,3 +130,76 @@ describe('RosterService.updateDetails — unique-conflict messages', () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 });
+
+// Payout details must be storable on the master Creator record even when the
+// creator has no signed contract yet — the admin console captures this before
+// signing so payouts can be prepped in advance.
+describe('RosterService.updateDetails — payout without a contract', () => {
+  it('saves payout details to the Creator record when no contract exists', async () => {
+    const { prisma, creatorUpdate } = buildPrisma({
+      creator: { id: 'c1' },
+      updateThrows: false,
+    });
+    const svc = svcWithStubbedProfile(prisma);
+
+    await expect(
+      svc.updateDetails('c1', {
+        payment: {
+          accountHolderName: 'Najwa Qotrunnada',
+          bankName: 'Bank Central Asia',
+          accountNumber: '1234567890',
+        },
+      }),
+    ).resolves.toEqual({ ok: true });
+
+    expect(creatorUpdate).toHaveBeenCalledTimes(1);
+    expect(creatorUpdate.mock.calls[0][0].data).toEqual({
+      paymentDetails: {
+        accountHolderName: 'Najwa Qotrunnada',
+        bankName: 'Bank Central Asia',
+        accountNumber: '1234567890',
+      },
+    });
+  });
+
+  it('merges a payout edit into any pre-existing Creator.paymentDetails JSON', async () => {
+    const { prisma, creatorUpdate } = buildPrisma({
+      creator: {
+        id: 'c1',
+        paymentDetails: { bankName: 'Old Bank', iban: 'IBAN123' },
+      } as unknown as { id: string },
+      updateThrows: false,
+    });
+    const svc = svcWithStubbedProfile(prisma);
+
+    await expect(
+      svc.updateDetails('c1', {
+        payment: { bankName: 'New Bank', accountNumber: '999' },
+      }),
+    ).resolves.toEqual({ ok: true });
+
+    expect(creatorUpdate.mock.calls[0][0].data).toEqual({
+      paymentDetails: { bankName: 'New Bank', iban: 'IBAN123', accountNumber: '999' },
+    });
+  });
+
+  it('mirrors the merged payout onto the LATEST contract when one exists', async () => {
+    const contractUpdate = jest.fn();
+    const prisma = {
+      creator: {
+        findUnique: jest.fn(async () => ({ id: 'c1' })),
+        update: jest.fn(async () => ({ id: 'c1' })),
+        findFirst: jest.fn(async () => null),
+      },
+      contract: {
+        findFirst: jest.fn(async () => ({ id: 'ct1', paymentDetails: null })),
+        update: contractUpdate,
+      },
+    } as unknown as PrismaService;
+    const svc = svcWithStubbedProfile(prisma);
+
+    await svc.updateDetails('c1', { payment: { accountNumber: '42' } });
+    expect(contractUpdate).toHaveBeenCalledTimes(1);
+    expect(contractUpdate.mock.calls[0][0].data.paymentDetails).toEqual({ accountNumber: '42' });
+  });
+});
