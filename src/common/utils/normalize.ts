@@ -48,6 +48,42 @@ export function normalizeName(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+/**
+ * Insert a space between the country code and the rest of an E.164-style
+ * phone number that arrived glued together (e.g. `+212770562267` →
+ * `+212 770562267`). Any input that already contains a separator (space,
+ * dash, dot, parens) is trimmed and returned as-is so hand-formatted numbers
+ * are never re-flowed. Non-strings and empty strings return null.
+ */
+export function normalizePhoneNumber(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  // Only reformat a pure "+digits" string; leave anything already formatted alone.
+  if (!/^\+\d+$/.test(trimmed)) return trimmed;
+  const digits = trimmed.slice(1);
+  const codeLen = detectCallingCodeLength(digits);
+  if (!codeLen || codeLen >= digits.length) return trimmed;
+  return `+${digits.slice(0, codeLen)} ${digits.slice(codeLen)}`;
+}
+
+// ITU-T calling codes by length. Anything starting 2-9 that isn't a listed
+// 1- or 2-digit prefix falls through to 3 digits (e.g. 212 Morocco, 971 UAE).
+const CALLING_CODE_1 = new Set(['1', '7']);
+const CALLING_CODE_2 = new Set([
+  '20', '27', '30', '31', '32', '33', '34', '36', '39', '40', '41', '43', '44',
+  '45', '46', '47', '48', '49', '51', '52', '53', '54', '55', '56', '57', '58',
+  '60', '61', '62', '63', '64', '65', '66', '81', '82', '84', '86', '90', '91',
+  '92', '93', '94', '95', '98',
+]);
+
+function detectCallingCodeLength(digits: string): number | null {
+  if (digits.length >= 2 && CALLING_CODE_2.has(digits.slice(0, 2))) return 2;
+  if (CALLING_CODE_1.has(digits[0])) return 1;
+  if (digits.length >= 3 && /^[2-9]/.test(digits)) return 3;
+  return null;
+}
+
 /** Validate a 3-letter currency code, upper-cased. Defaults handled by caller. */
 export function normalizeCurrency(value: unknown): string | null {
   if (typeof value !== 'string') return null;

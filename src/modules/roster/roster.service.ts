@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Contract, Creator, CreatorStats, Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { normalizePhoneNumber } from '../../common/utils/normalize';
 import { UpdateDetailsDto } from './dto/update-details.dto';
 
 /**
@@ -297,7 +298,10 @@ export class RosterService {
       creatorData.instagramUsername = raw ? raw.replace(/^@+/, '').toLowerCase() : null;
     }
     if (contact.email !== undefined) creatorData.email = norm(contact.email);
-    if (contact.phone !== undefined) creatorData.phoneNumber = norm(contact.phone);
+    if (contact.phone !== undefined) {
+      const trimmed = norm(contact.phone);
+      creatorData.phoneNumber = trimmed ? normalizePhoneNumber(trimmed) : trimmed;
+    }
     if (contact.address !== undefined) {
       const a = contact.address;
       creatorData.addressLine1 = norm(a.line1);
@@ -332,7 +336,10 @@ export class RosterService {
 
     if (latest) {
       const contractData: Prisma.ContractUncheckedUpdateInput = {};
-      if (contact.phone !== undefined) contractData.signerPhone = norm(contact.phone);
+      if (contact.phone !== undefined) {
+        const trimmed = norm(contact.phone);
+        contractData.signerPhone = trimmed ? normalizePhoneNumber(trimmed) : trimmed;
+      }
       if (contact.address !== undefined) {
         const a = contact.address;
         contractData.addressLine1 = norm(a.line1);

@@ -3,6 +3,7 @@ import {
   normalizeEmail,
   normalizeInstagram,
   normalizeName,
+  normalizePhoneNumber,
   parseDateLoose,
   parseNumericLoose,
   toBoundedInt,
@@ -89,6 +90,33 @@ describe('normalize utils', () => {
     });
     it('rejects non-3-letter codes', () => {
       expect(normalizeCurrency('dollars')).toBeNull();
+    });
+  });
+
+  describe('normalizePhoneNumber', () => {
+    it('inserts a space between a 3-digit country code and the rest', () => {
+      expect(normalizePhoneNumber('+212770562267')).toBe('+212 770562267');
+      expect(normalizePhoneNumber('+9715551234567')).toBe('+971 5551234567');
+    });
+    it('handles 1- and 2-digit country codes', () => {
+      expect(normalizePhoneNumber('+15551234567')).toBe('+1 5551234567');
+      expect(normalizePhoneNumber('+447700900123')).toBe('+44 7700900123');
+    });
+    it('trims surrounding whitespace before formatting', () => {
+      expect(normalizePhoneNumber('  +212770562267 ')).toBe('+212 770562267');
+    });
+    it('leaves already-formatted numbers alone', () => {
+      expect(normalizePhoneNumber('+212 770 562 267')).toBe('+212 770 562 267');
+      expect(normalizePhoneNumber('+1 (555) 123-4567')).toBe('+1 (555) 123-4567');
+    });
+    it('passes through non-E.164 strings without a leading plus', () => {
+      expect(normalizePhoneNumber('5551234567')).toBe('5551234567');
+    });
+    it('returns null for empty or non-string input', () => {
+      expect(normalizePhoneNumber('')).toBeNull();
+      expect(normalizePhoneNumber('   ')).toBeNull();
+      expect(normalizePhoneNumber(null)).toBeNull();
+      expect(normalizePhoneNumber(undefined)).toBeNull();
     });
   });
 
