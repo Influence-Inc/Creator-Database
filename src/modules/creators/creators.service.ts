@@ -12,6 +12,7 @@ import {
 import { ActivityChange } from '../activity-log/activity-change.interface';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { CreatorUpsertInput, FILL_ONLY_FIELDS, MERGEABLE_FIELDS } from './creator-fields.interface';
+import { CreatorMergeService } from './creator-merge.service';
 import { CreatorsRepository, CreatorWithContractCount } from './creators.repository';
 import { CategorizeCreatorsDto } from './dto/categorize-creators.dto';
 import { CategorizeResult } from './dto/categorize-result.interface';
@@ -19,6 +20,17 @@ import { CreateCreatorDto } from './dto/create-creator.dto';
 import { ParticipationQueryDto } from './dto/participation-query.dto';
 import { QueryCreatorsDto } from './dto/query-creators.dto';
 import { UpdateCreatorDto } from './dto/update-creator.dto';
+
+/**
+ * Sources trusted to trigger a destructive merge on an identity split. Both
+ * assert identity first-hand: a signed contract carries what the creator typed
+ * on the signing form, and a manual API call is a human acting deliberately.
+ * Scraped and LLM-extracted sources are deliberately excluded.
+ */
+const MERGE_ON_SPLIT_SOURCES: ReadonlySet<ActivitySource> = new Set([
+  ActivitySource.CONTRACT_SIGNED,
+  ActivitySource.MANUAL_API,
+]);
 
 export interface UpsertResult {
   creator: Creator | null;
@@ -80,6 +92,7 @@ export class CreatorsService {
     private readonly prisma: PrismaService,
     private readonly repo: CreatorsRepository,
     private readonly activityLog: ActivityLogService,
+    private readonly merger: CreatorMergeService,
   ) {}
 
   // -------------------------------------------------------------------------
@@ -344,7 +357,7 @@ export class CreatorsService {
     input: CreatorUpsertInput,
     source: ActivitySource,
   ): Promise<UpsertResult> {
-    const existing = await this.resolveExisting(input, tx);
+    const existing = await this.resolveExisting(input, source, tx);
 
     if (!existing) {
       const created = await this.repo.create(this.buildCreateData(input), tx);
@@ -371,19 +384,63 @@ export class CreatorsService {
     return { creator: updated, created: false, changed: true, skipped: false };
   }
 
-  /** Resolve an existing creator by priority: email, then instagram, then name. */
+  /**
+   * Resolve an existing creator by priority: email, then instagram, then name.
+   *
+   * One extra case on top of the priority order: an *identity split*. If the
+   * email resolves to a record with NO handle of its own, and the payload's
+   * handle resolves to a different record, then one person is spread across two
+   * rows — the handle-less one was created by a contract that arrived without a
+   * handle (see CreatorMergeService). Fold them together instead of resolving to
+   * one and silently orphaning the other.
+   *
+   * Two guards keep this from eating legitimately distinct creators:
+   *
+   *   - the email-matched record must have no handle. If it already owns a
+   *     DIFFERENT handle the payload is contradicting known identity — an
+   *     agency or manager address fronting several creators, say — which is a
+   *     conflict to leave alone, not a duplicate to merge.
+   *   - the source must be one that asserts identity first-hand. A signed
+   *     contract carries details the creator typed themselves; an LLM
+   *     extraction off an email thread does not, and must never trigger a
+   *     destructive merge on a possibly-hallucinated handle.
+   *
+   * The handle-holder survives: it is the long-lived master carrying the
+   * performance history that handle-based lookups (segmentation, the campaign
+   * dashboard) resolve against.
+   */
   private async resolveExisting(
     input: CreatorUpsertInput,
+    source: ActivitySource,
     tx: Prisma.TransactionClient,
   ): Promise<Creator | null> {
-    if (input.email) {
-      const byEmail = await this.repo.findByEmail(input.email, tx);
-      if (byEmail) return byEmail;
+    const byEmail = input.email ? await this.repo.findByEmail(input.email, tx) : null;
+    // The email match already carries a handle — identity is settled, and there
+    // is no split to detect.
+    if (byEmail && !isEmpty(byEmail.instagramUsername)) return byEmail;
+
+    const byIg = input.instagramUsername
+      ? await this.repo.findByInstagram(input.instagramUsername, tx)
+      : null;
+
+    if (byEmail && byIg && byEmail.id !== byIg.id) {
+      if (!MERGE_ON_SPLIT_SOURCES.has(source)) {
+        this.logger.warn(
+          `Identity split: email ${input.email} → ${byEmail.id}, instagram ` +
+            `${input.instagramUsername} → ${byIg.id}; not merging (source ${source})`,
+        );
+        return byEmail;
+      }
+      this.logger.warn(
+        `Identity split: email ${input.email} → ${byEmail.id}, instagram ` +
+          `${input.instagramUsername} → ${byIg.id}; merging into the handle-holder`,
+      );
+      const result = await this.merger.merge(byIg.id, byEmail.id, { source }, tx);
+      return result.survivor;
     }
-    if (input.instagramUsername) {
-      const byIg = await this.repo.findByInstagram(input.instagramUsername, tx);
-      if (byIg) return byIg;
-    }
+
+    if (byEmail) return byEmail;
+    if (byIg) return byIg;
     if (input.creatorName) {
       const byName = await this.repo.findByName(input.creatorName, tx);
       if (byName) return byName;

@@ -1,6 +1,7 @@
 import { ActivitySource, Creator, NegotiationStatus } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { ActivityLogService } from '../activity-log/activity-log.service';
+import { CreatorMergeService } from './creator-merge.service';
 import { CreatorsRepository } from './creators.repository';
 import { CreatorsService } from './creators.service';
 
@@ -59,6 +60,7 @@ describe('CreatorsService.upsertFromSource (merge logic)', () => {
     Pick<CreatorsRepository, 'findByEmail' | 'findByInstagram' | 'findByName' | 'create' | 'update'>
   >;
   let activityLog: { record: jest.Mock; findByCreator: jest.Mock };
+  let merger: { merge: jest.Mock };
 
   beforeEach(() => {
     repo = {
@@ -70,6 +72,7 @@ describe('CreatorsService.upsertFromSource (merge logic)', () => {
     } as unknown as typeof repo;
 
     activityLog = { record: jest.fn(), findByCreator: jest.fn() };
+    merger = { merge: jest.fn() };
 
     const prisma = {
       // Execute the transaction callback synchronously with a dummy tx client.
@@ -80,6 +83,7 @@ describe('CreatorsService.upsertFromSource (merge logic)', () => {
       prisma,
       repo as unknown as CreatorsRepository,
       activityLog as unknown as ActivityLogService,
+      merger as unknown as CreatorMergeService,
     );
   });
 
@@ -206,7 +210,13 @@ describe('CreatorsService.categorize', () => {
     repo = { findByIdentityKeys: jest.fn() } as unknown as typeof repo;
     const prisma = {} as unknown as PrismaService;
     const activityLog = {} as unknown as ActivityLogService;
-    service = new CreatorsService(prisma, repo as unknown as CreatorsRepository, activityLog);
+    const merger = {} as unknown as CreatorMergeService;
+    service = new CreatorsService(
+      prisma,
+      repo as unknown as CreatorsRepository,
+      activityLog,
+      merger,
+    );
   });
 
   it('classifies a matched creator with contracts as used, no contracts as unused', async () => {
@@ -273,5 +283,150 @@ describe('CreatorsService.categorize', () => {
       ],
     });
     expect(out.map((r) => r.category)).toEqual(['new', 'used', 'new']);
+  });
+});
+
+/**
+ * The duplicate-creator bug: a signed contract that arrived without an Instagram
+ * handle created a second record holding the signer's contact + payout details.
+ * Re-syncing that contract now carries BOTH keys, which resolve to two different
+ * records — the signal that they are one person and must be folded together.
+ */
+describe('CreatorsService.upsertFromSource (identity split)', () => {
+  let service: CreatorsService;
+  let repo: jest.Mocked<
+    Pick<CreatorsRepository, 'findByEmail' | 'findByInstagram' | 'findByName' | 'create' | 'update'>
+  >;
+  let activityLog: { record: jest.Mock; findByCreator: jest.Mock };
+  let merger: { merge: jest.Mock };
+
+  // The master: has the handle + performance history, never got an email.
+  const master = makeCreator({ id: 'master', instagramUsername: 'aibyjoe', averageViews: 100000 });
+  // The duplicate the handle-less contract created: contact details, no handle.
+  const dupe = makeCreator({ id: 'dupe', email: 'aibyjoe.ai@gmail.com', creatorName: 'Joe' });
+
+  beforeEach(() => {
+    repo = {
+      findByEmail: jest.fn(),
+      findByInstagram: jest.fn(),
+      findByName: jest.fn(),
+      create: jest.fn(),
+      update: jest.fn(),
+    } as unknown as typeof repo;
+    activityLog = { record: jest.fn(), findByCreator: jest.fn() };
+    merger = { merge: jest.fn() };
+    const prisma = {
+      $transaction: (cb: (tx: unknown) => unknown) => cb({}),
+    } as unknown as PrismaService;
+    service = new CreatorsService(
+      prisma,
+      repo as unknown as CreatorsRepository,
+      activityLog as unknown as ActivityLogService,
+      merger as unknown as CreatorMergeService,
+    );
+  });
+
+  it('merges when the email and handle resolve to different creators', async () => {
+    repo.findByEmail.mockResolvedValue(dupe);
+    repo.findByInstagram.mockResolvedValue(master);
+    const mergedSurvivor = { ...master, email: 'aibyjoe.ai@gmail.com' };
+    merger.merge.mockResolvedValue({ survivor: mergedSurvivor });
+    repo.update.mockResolvedValue(mergedSurvivor);
+
+    const result = await service.upsertFromSource(
+      { email: 'aibyjoe.ai@gmail.com', instagramUsername: 'aibyjoe', creatorName: 'Joe Marquez' },
+      ActivitySource.CONTRACT_SIGNED,
+    );
+
+    // The handle-holder survives; the handle-less duplicate is folded in.
+    expect(merger.merge).toHaveBeenCalledWith(
+      'master',
+      'dupe',
+      { source: ActivitySource.CONTRACT_SIGNED },
+      expect.anything(),
+    );
+    expect(result.creator?.id).toBe('master');
+    expect(repo.create).not.toHaveBeenCalled();
+  });
+
+  it('does not merge on an LLM extraction — only first-hand identity sources', async () => {
+    repo.findByEmail.mockResolvedValue(dupe);
+    repo.findByInstagram.mockResolvedValue(master);
+    repo.update.mockResolvedValue(dupe);
+
+    await service.upsertFromSource(
+      { email: 'aibyjoe.ai@gmail.com', instagramUsername: 'aibyjoe' },
+      ActivitySource.CLAUDE_EXTRACTION,
+    );
+
+    expect(merger.merge).not.toHaveBeenCalled();
+  });
+
+  it('does not merge when the email already owns a DIFFERENT handle (agency address)', async () => {
+    // One manager address fronting two creators: the email match already has its
+    // own handle, so the payload is naming a second, distinct creator — merging
+    // here would destroy a real record.
+    const managed = makeCreator({
+      id: 'managed',
+      email: 'agency@example.com',
+      instagramUsername: 'creator_one',
+    });
+    repo.findByEmail.mockResolvedValue(managed);
+    repo.findByInstagram.mockResolvedValue(
+      makeCreator({ id: 'other', instagramUsername: 'creator_two' }),
+    );
+    repo.update.mockResolvedValue(managed);
+
+    const result = await service.upsertFromSource(
+      { email: 'agency@example.com', instagramUsername: 'creator_two' },
+      ActivitySource.CONTRACT_SIGNED,
+    );
+
+    expect(merger.merge).not.toHaveBeenCalled();
+    expect(result.creator?.id).toBe('managed');
+  });
+
+  it('does not merge when both keys resolve to the same creator', async () => {
+    repo.findByEmail.mockResolvedValue(master);
+    repo.findByInstagram.mockResolvedValue(master);
+    repo.update.mockResolvedValue(master);
+
+    await service.upsertFromSource(
+      { email: 'joe@example.com', instagramUsername: 'aibyjoe' },
+      ActivitySource.CONTRACT_SIGNED,
+    );
+
+    expect(merger.merge).not.toHaveBeenCalled();
+    expect(repo.create).not.toHaveBeenCalled();
+  });
+
+  it('still creates a creator when neither key matches anything', async () => {
+    repo.findByEmail.mockResolvedValue(null);
+    repo.findByInstagram.mockResolvedValue(null);
+    repo.findByName.mockResolvedValue(null);
+    repo.create.mockResolvedValue(makeCreator({ id: 'fresh' }));
+
+    const result = await service.upsertFromSource(
+      { email: 'new@example.com', instagramUsername: 'brandnew' },
+      ActivitySource.CONTRACT_SIGNED,
+    );
+
+    expect(merger.merge).not.toHaveBeenCalled();
+    expect(result.created).toBe(true);
+    expect(result.creator?.id).toBe('fresh');
+  });
+
+  it('falls back to the handle when only it matches', async () => {
+    repo.findByEmail.mockResolvedValue(null);
+    repo.findByInstagram.mockResolvedValue(master);
+    repo.update.mockResolvedValue(master);
+
+    const result = await service.upsertFromSource(
+      { email: 'unknown@example.com', instagramUsername: 'aibyjoe' },
+      ActivitySource.CONTRACT_SIGNED,
+    );
+
+    expect(merger.merge).not.toHaveBeenCalled();
+    expect(result.creator?.id).toBe('master');
   });
 });
