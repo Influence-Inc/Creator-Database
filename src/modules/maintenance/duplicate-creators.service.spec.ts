@@ -3,9 +3,12 @@ import { CreatorMergeService } from '../creators/creator-merge.service';
 import { DuplicateCreatorsService } from './duplicate-creators.service';
 
 /**
- * Pairing a handle-less duplicate with its master. The bar is deliberately high:
- * only hard evidence (an email we actually sent, a shared thread, a shared
- * phone) pairs two records — never a name resemblance.
+ * Pairing a handle-less duplicate with its master.
+ *
+ * The two rows share almost nothing by construction — if they had a field in
+ * common they would never have split. So matches come in two grades: hard
+ * identity evidence, which merges unattended, and a name sitting inside the
+ * handle, which is only ever surfaced for a human to confirm.
  */
 describe('DuplicateCreatorsService.find', () => {
   let prisma: Record<string, any>;
@@ -14,23 +17,28 @@ describe('DuplicateCreatorsService.find', () => {
 
   const candidate = (over: Record<string, unknown> = {}) => ({
     id: 'dupe',
-    creatorName: 'Joe',
+    creatorName: 'Joe Marquez',
+    instagramUsername: null,
     email: 'aibyjoe.ai@gmail.com',
     threadId: null,
     phoneNumber: null,
-    _count: { contracts: 1 },
+    campaignName: null,
+    contracts: [],
     ...over,
   });
   const master = (over: Record<string, unknown> = {}) => ({
     id: 'master',
     creatorName: 'aibyjoe',
     instagramUsername: 'aibyjoe',
+    email: null,
     threadId: null,
     phoneNumber: null,
+    campaignName: null,
+    contracts: [],
+    stats: [],
     ...over,
   });
 
-  /** creators.findMany is called twice: candidates, then masters. */
   const setup = (candidates: unknown[], masters: unknown[], emails: unknown[] = []) => {
     prisma = {
       creator: {
@@ -45,81 +53,136 @@ describe('DuplicateCreatorsService.find', () => {
     );
   };
 
-  it('pairs on an email we actually sent to the master', async () => {
-    setup([candidate()], [master()], [{ creatorId: 'master', recipient: 'aibyjoe.ai@gmail.com' }]);
+  // -- the shape that actually exists in production -------------------------
 
-    const { pairs, unmatched } = await service.find();
+  it('flags "Joe Marquez" against handle "aibyjoe" for review, not auto-merge', async () => {
+    setup([candidate()], [master()]);
+
+    const { pairs, counts } = await service.find();
 
     expect(pairs).toHaveLength(1);
     expect(pairs[0].survivor.id).toBe('master');
-    expect(pairs[0].duplicate.id).toBe('dupe');
-    expect(pairs[0].evidence).toEqual(['email']);
-    expect(unmatched).toHaveLength(0);
+    expect(pairs[0].evidence).toContain('nameInHandle');
+    // A name is a hint, not proof.
+    expect(pairs[0].confidence).toBe('review');
+    expect(counts.review).toBe(1);
+    expect(counts.high).toBe(0);
   });
 
-  it('matches recipients case-insensitively', async () => {
+  it('flags "AIMAN GHAILAN" against handle "aiman.gn" (punctuation ignored)', async () => {
     setup(
-      [candidate({ email: 'AiByJoe.AI@Gmail.com' })],
-      [master()],
-      [{ creatorId: 'master', recipient: 'aibyjoe.ai@gmail.com' }],
+      [candidate({ creatorName: 'AIMAN GHAILAN', email: 'aymaan.gn@gmail.com' })],
+      [master({ id: 'm2', creatorName: 'aiman.gn', instagramUsername: 'aiman.gn' })],
     );
 
     const { pairs } = await service.find();
     expect(pairs).toHaveLength(1);
+    expect(pairs[0].evidence).toContain('nameInHandle');
   });
 
-  it('pairs on a shared outreach thread', async () => {
-    setup([candidate({ email: null, threadId: 'thread-9' })], [master({ threadId: 'thread-9' })]);
+  it('picks up the signing form name when the creator row has none', async () => {
+    setup(
+      [candidate({ creatorName: null, contracts: [{ signerName: 'Joe Marquez' }] })],
+      [master()],
+    );
 
     const { pairs } = await service.find();
-    expect(pairs).toHaveLength(1);
-    expect(pairs[0].evidence).toEqual(['threadId']);
+    expect(pairs[0].evidence).toContain('nameInHandle');
   });
 
-  it('pairs on a phone number regardless of formatting', async () => {
+  // -- hard evidence --------------------------------------------------------
+
+  it('merges unattended when a contract signer email matches the master', async () => {
     setup(
-      [candidate({ email: null, phoneNumber: '+1 (555) 123-4567' })],
+      [candidate()],
+      [master({ contracts: [{ signerEmail: 'aibyjoe.ai@gmail.com', signerPhone: null }] })],
+    );
+
+    const { pairs, counts } = await service.find();
+    expect(pairs[0].confidence).toBe('high');
+    expect(pairs[0].evidence).toContain('email');
+    expect(counts.high).toBe(1);
+  });
+
+  it('treats an address we actually sent outreach to as hard evidence', async () => {
+    setup([candidate()], [master()], [{ creatorId: 'master', recipient: 'AiByJoe.AI@Gmail.com' }]);
+
+    const { pairs } = await service.find();
+    expect(pairs[0].confidence).toBe('high');
+    expect(pairs[0].evidence).toContain('email');
+  });
+
+  it('matches a phone regardless of formatting', async () => {
+    setup(
+      [candidate({ creatorName: null, email: null, phoneNumber: '+1 (555) 123-4567' })],
       [master({ phoneNumber: '15551234567' })],
     );
 
     const { pairs } = await service.find();
-    expect(pairs).toHaveLength(1);
-    expect(pairs[0].evidence).toEqual(['phone']);
+    expect(pairs[0].confidence).toBe('high');
+    expect(pairs[0].evidence).toContain('phone');
   });
 
-  it('never pairs on a name resemblance alone', async () => {
-    // Same first name, and nothing else in common — not evidence.
-    setup([candidate({ email: 'someone@else.com' })], [master({ creatorName: 'Joe' })]);
-
-    const { pairs, unmatched } = await service.find();
-    expect(pairs).toHaveLength(0);
-    expect(unmatched).toHaveLength(1);
-  });
-
-  it('leaves a duplicate unmatched when two masters both fit', async () => {
+  it('prefers the hard match when one master matches by name and another by email', async () => {
     setup(
-      [candidate({ threadId: 'shared-thread' })],
+      [candidate()],
       [
-        master(),
-        master({ id: 'master2', instagramUsername: 'someoneelse', threadId: 'shared-thread' }),
+        master({ id: 'byname', instagramUsername: 'aibyjoemusic', creatorName: 'aibyjoemusic' }),
+        master({
+          id: 'byemail',
+          instagramUsername: 'unrelated',
+          creatorName: 'unrelated',
+          contracts: [{ signerEmail: 'aibyjoe.ai@gmail.com' }],
+        }),
       ],
-      [{ creatorId: 'master', recipient: 'aibyjoe.ai@gmail.com' }],
+    );
+
+    const { pairs } = await service.find();
+    expect(pairs[0].survivor.id).toBe('byemail');
+    expect(pairs[0].confidence).toBe('high');
+  });
+
+  // -- guards ---------------------------------------------------------------
+
+  it('never matches on a shared campaign alone', async () => {
+    // Dozens of creators run the same campaign — that is not identity.
+    setup(
+      [candidate({ creatorName: null, email: null, campaignName: 'Spring Drop' })],
+      [master({ campaignName: 'Spring Drop' })],
     );
 
     const { pairs, unmatched } = await service.find();
-    // email → master, thread → master2. Ambiguous, so a human decides.
     expect(pairs).toHaveLength(0);
     expect(unmatched).toHaveLength(1);
   });
 
-  it('ignores an address that reached two different masters (shared inbox)', async () => {
+  it('reports a shared campaign as corroboration alongside a name match', async () => {
+    setup(
+      [candidate({ campaignName: 'Spring Drop' })],
+      [master({ stats: [{ campaignName: 'Spring Drop' }] })],
+    );
+
+    const { pairs } = await service.find();
+    expect(pairs[0].evidence).toEqual(expect.arrayContaining(['nameInHandle', 'sharedCampaign']));
+    expect(pairs[0].sharedCampaigns).toEqual(['spring drop']);
+  });
+
+  it('downgrades to review and lists alternatives when several masters fit', async () => {
     setup(
       [candidate()],
-      [master(), master({ id: 'master2', instagramUsername: 'other' })],
-      [
-        { creatorId: 'master', recipient: 'aibyjoe.ai@gmail.com' },
-        { creatorId: 'master2', recipient: 'aibyjoe.ai@gmail.com' },
-      ],
+      [master(), master({ id: 'master2', instagramUsername: 'joeyb', creatorName: 'joeyb' })],
+    );
+
+    const { pairs } = await service.find();
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0].confidence).toBe('review');
+    expect(pairs[0].alternatives).toHaveLength(1);
+  });
+
+  it('ignores name fragments too short or too generic to mean anything', async () => {
+    setup(
+      [candidate({ creatorName: 'Jo The Official', email: null })],
+      [master({ instagramUsername: 'theofficialstore', creatorName: 'theofficialstore' })],
     );
 
     const { pairs, unmatched } = await service.find();
@@ -136,12 +199,43 @@ describe('DuplicateCreatorsService.find', () => {
     expect(prisma.emailHistory.findMany).not.toHaveBeenCalled();
   });
 
-  it('mergeAll defaults to reporting, and only writes when told to', async () => {
-    setup([candidate()], [master()], [{ creatorId: 'master', recipient: 'aibyjoe.ai@gmail.com' }]);
+  // -- merging --------------------------------------------------------------
 
-    const dry = await service.mergeAll(true);
-    expect(dry.matched).toBe(1);
-    expect(dry.merged).toBe(0);
+  it('mergeAll merges hard matches only and leaves name matches for a human', async () => {
+    setup(
+      [
+        candidate({ id: 'hard', contracts: [{ signerEmail: 'hard@x.com' }] }),
+        candidate({ id: 'soft', email: 'soft@x.com', creatorName: 'Joe Marquez' }),
+      ],
+      [
+        master({
+          id: 'm-hard',
+          instagramUsername: 'hardguy',
+          creatorName: 'hardguy',
+          contracts: [{ signerEmail: 'hard@x.com' }],
+        }),
+        master(),
+      ],
+    );
+
+    const res = await service.mergeAll(false);
+
+    expect(res.matched).toBe(1);
+    expect(res.needsReview).toBe(1);
+    expect(merger.merge).toHaveBeenCalledTimes(1);
+    expect(merger.merge).toHaveBeenCalledWith(
+      'm-hard',
+      'hard',
+      expect.objectContaining({ dryRun: false }),
+    );
+  });
+
+  it('mergeAll writes nothing on a dry run', async () => {
+    setup([candidate()], [master({ contracts: [{ signerEmail: 'aibyjoe.ai@gmail.com' }] })]);
+
+    const res = await service.mergeAll(true);
+    expect(res.matched).toBe(1);
+    expect(res.merged).toBe(0);
     expect(merger.merge).toHaveBeenCalledWith(
       'master',
       'dupe',
