@@ -20,8 +20,12 @@
     loggingIn: false,
     search: '',
     usageFilter: 'Used', // Used (default) | Unused | All
+    // Roster sort — click a column header to change. Views-desc by default so
+    // the biggest creators lead.
+    sortKey: 'views',
+    sortDir: 'desc',
     selectedId: null,
-    activeTab: 'performance',
+    activeTab: 'contract',
     // Inline edit state for the Contact & Payment cards.
     editContact: false,
     editPayment: false,
@@ -41,10 +45,14 @@
     cmdkOpen: false,
     cmdkQuery: '',
     cmdkIndex: 0,
+    // Transient confirmation banner ({text, kind}) — cleared on a timer.
+    toast: null,
   };
 
   // Tabs surfaced in the URL (profile view). Kept in sync with TAB_DEFS below.
-  var TAB_KEYS = ['performance', 'contract', 'campaigns'];
+  // 'contract' is the default, so it's the tab a bare '#/c/:id' URL lands on.
+  var TAB_KEYS = ['contract', 'campaigns'];
+  var DEFAULT_TAB = 'contract';
 
   var root = document.getElementById('root');
 
@@ -54,17 +62,19 @@
   // without needing an SPA fallback on the API server.
   function parseHash() {
     var h = String(window.location.hash || '').replace(/^#/, '');
-    if (!h || h === '/') return { selectedId: null, activeTab: 'performance' };
+    if (!h || h === '/') return { selectedId: null, activeTab: DEFAULT_TAB };
     var parts = h.split('/').filter(Boolean); // ['c', ':id', ':tab?']
     if (parts[0] === 'c' && parts[1]) {
-      var tab = parts[2] && TAB_KEYS.indexOf(parts[2]) >= 0 ? parts[2] : 'performance';
+      // An unknown tab (e.g. a stale '/performance' link) falls back to the
+      // default rather than rendering nothing.
+      var tab = parts[2] && TAB_KEYS.indexOf(parts[2]) >= 0 ? parts[2] : DEFAULT_TAB;
       return { selectedId: decodeURIComponent(parts[1]), activeTab: tab };
     }
-    return { selectedId: null, activeTab: 'performance' };
+    return { selectedId: null, activeTab: DEFAULT_TAB };
   }
   function hashFor(sel, tab) {
     if (!sel) return '#/';
-    var t = tab && tab !== 'performance' ? '/' + tab : '';
+    var t = tab && tab !== DEFAULT_TAB ? '/' + tab : '';
     return '#/c/' + encodeURIComponent(sel) + t;
   }
   // Sync the URL to the current state. Suppressed while we're applying a hash
@@ -148,6 +158,9 @@
   // Computed server-side in the /roster read-model (segment: 'used' | 'unused').
   function segChip(c) {
     if (c.segment !== 'used' && c.segment !== 'unused') return '';
+    // Redundant when the segment filter already guarantees it — a column of
+    // identical "Used" chips is noise. Only meaningful on the mixed "All" view.
+    if (state.usageFilter !== 'All') return '';
     var label = c.segment === 'used' ? 'Used' : 'Unused';
     var signed = c.signedContracts || 0;
     var camps = c.campaigns || 0;
@@ -168,6 +181,64 @@
     if (state.usageFilter === 'All') return true;
     if (state.usageFilter === 'Unused') return c.segment === 'unused';
     return c.segment === 'used';
+  }
+
+  // Free-text roster match — name, @handle, platforms and last campaign, so the
+  // same query works whether you remember the person or the work.
+  function matchesQuery(c, q) {
+    if (!q) return true;
+    return (
+      (c.name && c.name.toLowerCase().indexOf(q) >= 0) ||
+      (c.handle && c.handle.toLowerCase().indexOf(q) >= 0) ||
+      (c.lastCampaign && c.lastCampaign.toLowerCase().indexOf(q) >= 0) ||
+      (c.platforms || []).join(' ').toLowerCase().indexOf(q) >= 0
+    );
+  }
+
+  // Sortable roster columns. `num: true` sorts numerically with blanks last.
+  var SORT_COLS = [
+    { key: 'name', label: 'Creator' },
+    { key: 'platforms', label: 'Platforms', sortable: false, cls: 'hide-sm' },
+    { key: 'campaigns', label: 'Campaigns', num: true, cls: 'hide-sm' },
+    { key: 'views', label: 'Total views', num: true },
+    { key: 'cpm', label: 'CPM', num: true, cls: 'hide-sm' },
+    { key: 'engagement', label: 'Engagement', num: true, cls: 'hide-sm' },
+  ];
+  function sortCol(key) {
+    for (var i = 0; i < SORT_COLS.length; i++) if (SORT_COLS[i].key === key) return SORT_COLS[i];
+    return null;
+  }
+
+  // Filter + sort in one place, so the full render and the incremental
+  // search re-render can never disagree about what's on screen.
+  function visibleCreators() {
+    if (!state.roster || !state.roster.creators) return [];
+    var q = state.search.trim().toLowerCase();
+    var list = state.roster.creators.filter(function (c) {
+      return matchesQuery(c, q) && matchesUsage(c);
+    });
+    var col = sortCol(state.sortKey);
+    if (!col) return list;
+    var dir = state.sortDir === 'asc' ? 1 : -1;
+    return list.slice().sort(function (a, b) {
+      if (col.num) {
+        var av = a[col.key];
+        var bv = b[col.key];
+        var aNull = av === null || av === undefined || isNaN(av);
+        var bNull = bv === null || bv === undefined || isNaN(bv);
+        // Blanks always sink to the bottom, whichever way the column is sorted.
+        if (aNull && bNull) return 0;
+        if (aNull) return 1;
+        if (bNull) return -1;
+        return (Number(av) - Number(bv)) * dir;
+      }
+      return String(a[col.key] || '').localeCompare(String(b[col.key] || '')) * dir;
+    });
+  }
+
+  // Any filter narrowing the roster? Drives the "Clear filters" affordance.
+  function filtersActive() {
+    return state.search.trim() !== '' || state.usageFilter !== 'Used';
   }
   function usageChips() {
     return ['Used', 'Unused', 'All']
@@ -419,7 +490,7 @@
 
     saveDetails({ contact: contact }, function () {
       state.editContact = false;
-      render();
+      showToast('Contact details saved');
     });
   }
 
@@ -441,7 +512,7 @@
       },
       function () {
         state.editPayment = false;
-        render();
+        showToast('Payment details saved');
       },
     );
   }
@@ -493,14 +564,26 @@
   }
 
   function topbar() {
+    // Breadcrumb doubles as navigation: "Creator Database" is clickable when
+    // you're inside a profile, so there's always an obvious way back.
+    var inProfile = !!state.selectedId;
+    var crumb = inProfile
+      ? '<button class="crumb crumb-link" data-act="back">Creator Database</button>' +
+        '<span class="crumb-sep">/</span>' +
+        '<span class="crumb crumb-now">' +
+        esc((state.profile && state.profile.name) || 'Creator') +
+        '</span>'
+      : '<span class="crumb">Creator Database</span>';
     return (
       '<div class="topbar">' +
       '<div class="left">' +
-      '<div class="brand-mark">' +
+      '<button class="brand-mark" data-act="back" title="Back to roster">' +
       WORDMARK +
-      '</div>' +
+      '</button>' +
       '<div class="divider"></div>' +
-      '<div class="crumb">Creator Database</div>' +
+      '<div class="crumbs">' +
+      crumb +
+      '</div>' +
       '</div>' +
       '<div class="right">' +
       '<button class="cmdk-btn" data-act="open-cmdk" title="Search (Cmd+K)">' +
@@ -518,53 +601,126 @@
     );
   }
 
+  // Sortable column header. Clicking toggles direction; the active column keeps
+  // a persistent arrow so the current sort is always readable.
+  function headCell(col) {
+    var cls = 'rh' + (col.cls ? ' ' + col.cls : '');
+    if (col.sortable === false) return '<div class="' + cls + '">' + esc(col.label) + '</div>';
+    var active = state.sortKey === col.key;
+    var arrow = active ? (state.sortDir === 'asc' ? '↑' : '↓') : '';
+    return (
+      '<div class="' +
+      cls +
+      ' sortable' +
+      (active ? ' sorted' : '') +
+      '" data-act="sort" data-key="' +
+      col.key +
+      '" title="Sort by ' +
+      esc(col.label) +
+      '">' +
+      esc(col.label) +
+      '<span class="sort-arrow">' +
+      arrow +
+      '</span></div>'
+    );
+  }
+  function rosterHead() {
+    return (
+      '<div class="roster-grid roster-head">' +
+      SORT_COLS.map(headCell).join('') +
+      '<div></div></div>'
+    );
+  }
+
+  // Grey placeholder rows while the roster is in flight — steadier than a bare
+  // spinner because the table's shape is already on screen.
+  function skeletonRows(n) {
+    var one =
+      '<div class="roster-grid roster-row skel-row">' +
+      '<div class="creator-cell"><div class="skel skel-pfp"></div><div style="flex:1">' +
+      '<div class="skel skel-line" style="width:44%"></div>' +
+      '<div class="skel skel-line sm" style="width:28%"></div></div></div>' +
+      '<div class="hide-sm"><div class="skel skel-line" style="width:50%"></div></div>' +
+      '<div class="hide-sm"><div class="skel skel-line" style="width:36%"></div></div>' +
+      '<div><div class="skel skel-line" style="width:52%"></div></div>' +
+      '<div class="hide-sm"><div class="skel skel-line" style="width:44%"></div></div>' +
+      '<div class="hide-sm"><div class="skel skel-line" style="width:40%"></div></div>' +
+      '<div></div></div>';
+    return new Array(n + 1).join(one);
+  }
+
+  // Compact orientation tiles above the table — they describe the CURRENT
+  // filtered view, so they change as you search or switch segments.
+  function rosterSummary(list) {
+    var views = 0;
+    var camps = 0;
+    for (var i = 0; i < list.length; i++) {
+      views += list[i].views || 0;
+      camps += list[i].campaigns || 0;
+    }
+    return (
+      '<div class="summary-row">' +
+      summaryTile('Creators shown', String(list.length)) +
+      summaryTile('Campaigns', String(camps)) +
+      summaryTile('Combined views', fmtNum(views)) +
+      '</div>'
+    );
+  }
+  function summaryTile(k, v) {
+    return (
+      '<div class="sum-tile"><div class="k">' + esc(k) + '</div><div class="v">' + esc(v) + '</div></div>'
+    );
+  }
+
+  // Everything below the page header — re-rendered on its own while typing so
+  // the search box keeps focus.
+  function rosterBody() {
+    var data = state.roster;
+    var list = visibleCreators();
+    var rows;
+    if (data.total === 0) {
+      rows =
+        '<div class="empty">' +
+        (state.rosterError
+          ? '<div class="empty-t">Could not reach the API</div><div class="empty-s">Check the service is running, then reload.</div>'
+          : '<div class="empty-t">No creators yet</div><div class="empty-s">Records appear here as outreach, contract and stats syncs run.</div>') +
+        '</div>';
+    } else if (list.length === 0) {
+      rows =
+        '<div class="empty"><div class="empty-t">No creators match your filters</div>' +
+        '<div class="empty-s">Try a different search, or widen the segment.</div>' +
+        '<button class="btn-accent" style="margin-top:16px" data-act="clear-filters">Clear filters</button></div>';
+    } else {
+      rows = list.map(rosterRow).join('');
+    }
+    return rosterSummary(list) + '<div class="table">' + rosterHead() + rows + '</div>';
+  }
+
   function rosterView() {
     var data = state.roster;
-    var body;
-    if (data === null) {
-      body = '<div class="spinner"></div>';
-    } else {
-      var q = state.search.trim().toLowerCase();
-      var list = data.creators.filter(function (c) {
-        var mq =
-          !q ||
-          (c.name && c.name.toLowerCase().indexOf(q) >= 0) ||
-          (c.handle && c.handle.toLowerCase().indexOf(q) >= 0);
-        return mq && matchesUsage(c);
-      });
-      var countLabel = list.length + ' of ' + data.total + ' creators';
+    var head =
+      '<div class="page-head">' +
+      '<div><div class="page-title">Creator roster</div><div class="page-sub" id="roster-count">' +
+      (data === null ? 'Loading…' : esc(visibleCreators().length + ' of ' + data.total + ' creators')) +
+      '</div></div>' +
+      '<div class="toolbar">' +
+      '<div class="search"><span class="search-i">⚲</span>' +
+      '<input id="search" type="text" placeholder="Search name, @handle, platform…" value="' +
+      esc(state.search) +
+      '" autocomplete="off">' +
+      (state.search ? '<button class="search-x" data-act="clear-search" title="Clear">✕</button>' : '') +
+      '</div>' +
+      usageChips() +
+      '</div></div>';
 
-      var rows;
-      if (data.total === 0) {
-        rows =
-          '<div class="empty">' +
-          (state.rosterError
-            ? 'Could not reach the API. Check the service is running.'
-            : 'No creators yet. Records appear here as outreach, contract and stats syncs run.') +
-          '</div>';
-      } else if (list.length === 0) {
-        rows = '<div class="empty">No creators match your filters.</div>';
-      } else {
-        rows = list.map(rosterRow).join('');
-      }
+    var body =
+      data === null
+        ? '<div class="table">' + rosterHead() + skeletonRows(6) + '</div>'
+        : '<div id="roster-body">' + rosterBody() + '</div>';
 
-      body =
-        '<div class="page-head">' +
-        '<div><div class="page-title">Creator roster</div><div class="page-sub">' +
-        esc(countLabel) +
-        '</div></div>' +
-        '<div class="toolbar">' +
-        '<div class="search"><span>⚲</span><input id="search" type="text" placeholder="Search name or @handle" value="' +
-        esc(state.search) +
-        '"></div>' +
-        usageChips() +
-        '</div></div>' +
-        '<div class="table">' +
-        '<div class="roster-grid roster-head"><div>Creator</div><div class="hide-sm">Platforms</div><div class="hide-sm">Campaigns</div><div>Total views</div><div class="hide-sm">CPM</div><div class="hide-sm">Engagement</div><div></div></div>' +
-        rows +
-        '</div>';
-    }
-    return '<div class="app">' + topbar() + '<div class="page list fade">' + body + '</div></div>';
+    return (
+      '<div class="app">' + topbar() + '<div class="page list fade">' + head + body + '</div></div>'
+    );
   }
 
   function rosterRow(c) {
@@ -606,13 +762,10 @@
     );
   }
 
-  function kv(k, v) {
-    return '<div class="kv"><div class="k">' + esc(k) + '</div><div class="v">' + v + '</div></div>';
-  }
-
   // ---- profile ------------------------------------------------------------
+  // Performance now lives in the hero as profile stats, so the profile is just
+  // two tabs: the paperwork, and the work.
   var TAB_DEFS = [
-    { key: 'performance', label: 'Performance' },
     { key: 'contract', label: 'Contract & Legal' },
     { key: 'campaigns', label: 'Campaigns' },
   ];
@@ -736,28 +889,56 @@
     );
   }
 
+  // Profile header: identity on the left, performance as a stat strip directly
+  // beneath the name. These numbers used to sit behind a Performance tab; as
+  // header stats they're context for everything else on the page.
   function heroCard(p) {
+    var plats = (p.platformBreakdown || [])
+      .map(function (pf) {
+        return '<span class="hero-plat">' + esc(pf.name) + '</span>';
+      })
+      .join('');
+    var signed = (p.contracts || []).length;
+
+    var stats =
+      stat('Combined views', fmtNum(p.views), 'Total views across every campaign on record') +
+      stat('Blended CPM', fmtCpm(p.cpm), 'Cost per thousand views, blended across campaigns') +
+      stat('Engagement', fmtPct(p.engagement), 'Average engagement rate') +
+      stat('Campaigns', String(p.campaigns), 'Campaigns from contracts and performance data') +
+      stat('Contracts', String(signed), 'Contracts on record') +
+      (p.followers != null ? stat('Followers', fmtNum(p.followers), 'Follower count on the primary platform') : '');
+
     return (
       '<div class="card card-lg profile-hero">' +
+      '<div class="hero-id">' +
       '<div class="pfp-lg">' +
       esc(p.initials) +
       '</div>' +
-      '<div style="flex:1;min-width:200px">' +
+      '<div class="hero-idtext">' +
       '<div class="hero-name">' +
       esc(p.name) +
       '</div>' +
-      '<div class="creator-handle mono" style="margin-top:3px">' +
+      '<div class="hero-meta">' +
+      '<span class="creator-handle mono">' +
       esc(p.handle) +
-      '</div></div>' +
+      '</span>' +
+      (plats ? '<span class="hero-plats">' + plats + '</span>' : '') +
+      '</div></div></div>' +
       '<div class="hero-stats">' +
-      stat('Total views', fmtNum(p.views)) +
-      stat('CPM', fmtCpm(p.cpm)) +
-      stat('Campaigns', String(p.campaigns)) +
+      stats +
       '</div></div>'
     );
   }
-  function stat(k, v) {
-    return '<div class="stat"><div class="k">' + esc(k) + '</div><div class="v">' + v + '</div></div>';
+  function stat(k, v, tip) {
+    return (
+      '<div class="stat"' +
+      (tip ? ' title="' + esc(tip) + '"' : '') +
+      '><div class="k">' +
+      esc(k) +
+      '</div><div class="v">' +
+      v +
+      '</div></div>'
+    );
   }
 
   function tabsBar() {
@@ -779,14 +960,7 @@
   }
 
   function tabContent(p) {
-    switch (state.activeTab) {
-      case 'campaigns':
-        return campaignsTab(p);
-      case 'performance':
-        return performanceTab(p);
-      default:
-        return contractTab(p);
-    }
+    return state.activeTab === 'campaigns' ? campaignsTab(p) : contractTab(p);
   }
 
   function bars(list, metaFn) {
@@ -890,11 +1064,11 @@
         dl(
           'Instagram',
           ct.instagramUsername
-            ? '<span class="mono">@' + esc(ct.instagramUsername) + '</span>'
+            ? copyable('@' + ct.instagramUsername, ct.instagramUsername)
             : '—',
         ) +
-        dl('Email', '<span class="mono">' + esc(ct.email || '—') + '</span>') +
-        dl('Phone', '<span class="mono">' + esc(ct.phone || '—') + '</span>') +
+        dl('Email', ct.email ? copyable(ct.email, ct.email) : '—') +
+        dl('Phone', ct.phone ? copyable(ct.phone, ct.phone) : '—') +
         dl('Registered address', esc(ct.address || '—')) +
         '</div>';
     }
@@ -981,6 +1155,17 @@
   function dl(k, v) {
     return '<div><div class="k">' + esc(k) + '</div><div class="v">' + v + '</div></div>';
   }
+  // A mono value with a click-to-copy affordance — these are fields an admin
+  // routinely pastes elsewhere (email, handle, phone).
+  function copyable(display, raw) {
+    return (
+      '<span class="copyable" data-act="copy" data-copy="' +
+      esc(raw) +
+      '" title="Click to copy"><span class="mono">' +
+      esc(display) +
+      '</span><span class="copy-i">⧉</span></span>'
+    );
+  }
 
   function contractHistory(contracts) {
     var head =
@@ -1025,22 +1210,16 @@
     return '<div class="section-table">' + title + head + rows + '</div>';
   }
 
-  function performanceTab(p) {
+  // Where a creator's views actually came from. Lives alongside the campaign
+  // table now that the Performance tab is gone.
+  function platformCard(p) {
     return (
-      '<div class="grid-4">' +
-      statCard('Combined views', fmtNum(p.views)) +
-      statCard('Blended CPM', fmtCpm(p.cpm)) +
-      statCard('Engagement rate', fmtPct(p.engagement)) +
-      statCard('Campaigns', String(p.campaigns)) +
-      '<div style="grid-column:1/-1" class="card"><div class="card-title">Views by platform</div>' +
+      '<div class="card"><div class="card-title">Views by platform</div>' +
       bars(p.platformBreakdown, function (pf) {
         return fmtNum(pf.views) + ' · ' + fmtPct(pf.engagement) + ' eng.';
       }) +
-      '</div></div>'
+      '</div>'
     );
-  }
-  function statCard(k, v) {
-    return '<div class="stat-card"><div class="k">' + esc(k) + '</div><div class="v">' + v + '</div></div>';
   }
 
   function campaignsTab(p) {
@@ -1097,7 +1276,15 @@
             })
             .join('')
         : '<div class="empty">No campaigns on record.</div>';
-    return '<div class="section-table"><div class="st-title">Campaigns · deliverables &amp; rights</div>' + head + rows + '</div>';
+    return (
+      '<div class="stack">' +
+      '<div class="section-table"><div class="st-title">Campaigns · deliverables &amp; rights</div>' +
+      head +
+      rows +
+      '</div>' +
+      platformCard(p) +
+      '</div>'
+    );
   }
 
   // ---- command palette (Cmd/Ctrl + K) -------------------------------------
@@ -1155,7 +1342,7 @@
       var pick = results[state.cmdkIndex];
       if (!pick) return;
       state.selectedId = pick.id;
-      state.activeTab = 'performance';
+      state.activeTab = DEFAULT_TAB;
       state.cmdkOpen = false;
       state.cmdkQuery = '';
       syncUrlToState();
@@ -1221,6 +1408,32 @@
     );
   }
 
+  // ---- toasts -------------------------------------------------------------
+  // Short confirmation for actions whose result isn't otherwise visible —
+  // a successful save used to just close the form with no acknowledgement.
+  var toastTimer = null;
+  function showToast(text, kind) {
+    state.toast = { text: text, kind: kind || 'ok' };
+    render();
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () {
+      state.toast = null;
+      render();
+    }, 2600);
+  }
+  function toastView() {
+    if (!state.toast) return '';
+    return (
+      '<div class="toast ' +
+      esc(state.toast.kind) +
+      '"><span class="toast-i">' +
+      (state.toast.kind === 'err' ? '!' : '✓') +
+      '</span>' +
+      esc(state.toast.text) +
+      '</div>'
+    );
+  }
+
   // ---- render + events ----------------------------------------------------
   function render() {
     if (state.view === 'loading') {
@@ -1228,9 +1441,9 @@
     } else if (state.view === 'login') {
       root.innerHTML = loginView();
     } else if (state.selectedId) {
-      root.innerHTML = profileView() + cmdkView();
+      root.innerHTML = profileView() + cmdkView() + toastView();
     } else {
-      root.innerHTML = rosterView() + cmdkView();
+      root.innerHTML = rosterView() + cmdkView() + toastView();
     }
     // Refocus the palette input after a full re-render (opened via keybind or
     // topbar button). Cursor placed at the end for continued typing.
@@ -1253,6 +1466,49 @@
     var act = el.getAttribute('data-act');
     if (act === 'theme') return toggleTheme();
     if (act === 'usage') return setState({ usageFilter: el.getAttribute('data-usage') });
+    if (act === 'sort') {
+      var key = el.getAttribute('data-key');
+      var col = sortCol(key);
+      if (!col) return;
+      // Same column toggles direction; a new column starts on the ordering
+      // that's most useful for it — biggest-first for numbers, A-Z for text.
+      if (state.sortKey === key) {
+        state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
+      } else {
+        state.sortKey = key;
+        state.sortDir = col.num ? 'desc' : 'asc';
+      }
+      return render();
+    }
+    if (act === 'clear-search') {
+      state.search = '';
+      return render();
+    }
+    if (act === 'clear-filters') {
+      state.search = '';
+      state.usageFilter = 'All';
+      return render();
+    }
+    if (act === 'copy') {
+      var text = el.getAttribute('data-copy') || '';
+      if (!text) return;
+      var done = function () { showToast('Copied to clipboard'); };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function () {
+          showToast('Could not copy', 'err');
+        });
+      } else {
+        // Fallback for non-secure contexts, where the async clipboard API is
+        // unavailable.
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); done(); } catch (_) { showToast('Could not copy', 'err'); }
+        document.body.removeChild(ta);
+      }
+      return;
+    }
     if (act === 'reveal-pay') {
       return loadContractsFull(function () {
         setState({ revealPay: true });
@@ -1298,7 +1554,7 @@
     if (act === 'open') {
       var openId = el.getAttribute('data-id');
       state.selectedId = openId;
-      state.activeTab = 'performance';
+      state.activeTab = DEFAULT_TAB;
       state.cmdkOpen = false;
       state.cmdkQuery = '';
       syncUrlToState();
@@ -1338,6 +1594,20 @@
     }
     if (state.cmdkOpen && (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter')) {
       cmdkKey(e);
+      return;
+    }
+    // '/' jumps to the roster search — the usual table-app shortcut. Ignored
+    // while typing somewhere else.
+    if (e.key === '/' && !mod && state.view === 'app' && !state.selectedId) {
+      var t = e.target;
+      var typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+      if (typing) return;
+      var box = document.getElementById('search');
+      if (box) {
+        e.preventDefault();
+        box.focus();
+        box.select();
+      }
     }
   });
 
@@ -1395,29 +1665,28 @@
     // fall through to roster search handler below
     if (e.target.id === 'search') {
       state.search = e.target.value;
-      var data = state.roster;
-      if (!data) return;
-      // Re-render only the rows + count, keeping the input focused.
-      var q = state.search.trim().toLowerCase();
-      var list = data.creators.filter(function (c) {
-        var mq =
-          !q ||
-          (c.name && c.name.toLowerCase().indexOf(q) >= 0) ||
-          (c.handle && c.handle.toLowerCase().indexOf(q) >= 0);
-        return mq && matchesUsage(c);
-      });
-      var tbl = root.querySelector('.table');
-      var sub = root.querySelector('.page-sub');
-      if (sub) sub.textContent = list.length + ' of ' + data.total + ' creators';
-      if (tbl) {
-        var headHtml = tbl.querySelector('.roster-head').outerHTML;
-        var rowsHtml =
-          data.total === 0
-            ? '<div class="empty">No creators yet.</div>'
-            : list.length === 0
-              ? '<div class="empty">No creators match your filters.</div>'
-              : list.map(rosterRow).join('');
-        tbl.innerHTML = headHtml + rowsHtml;
+      if (!state.roster) return;
+      // Re-render the summary + table only, so the input keeps focus and the
+      // caret doesn't jump while typing.
+      var body = document.getElementById('roster-body');
+      var sub = document.getElementById('roster-count');
+      if (sub) sub.textContent = visibleCreators().length + ' of ' + state.roster.total + ' creators';
+      if (body) body.innerHTML = rosterBody();
+      // The clear (✕) button lives inside the search box, which we deliberately
+      // don't re-render — toggle it directly instead.
+      var x = root.querySelector('.search-x');
+      if (state.search && !x) {
+        var box = root.querySelector('.search');
+        if (box) {
+          var btn = document.createElement('button');
+          btn.className = 'search-x';
+          btn.setAttribute('data-act', 'clear-search');
+          btn.title = 'Clear';
+          btn.textContent = '✕';
+          box.appendChild(btn);
+        }
+      } else if (!state.search && x) {
+        x.parentNode.removeChild(x);
       }
     }
   });
