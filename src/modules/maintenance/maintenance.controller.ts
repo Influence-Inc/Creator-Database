@@ -27,13 +27,21 @@ export class MaintenanceController {
     return this.maintenance.purgeDemo(dryRun === 'true' || dryRun === '1');
   }
 
-  /** Read-only: which creators look split, and what ties each pair together. */
+  /**
+   * Read-only: which creators look split, what ties each pair together, and how
+   * sure we are. `high` pairs carry hard identity evidence; `review` pairs rest
+   * on the duplicate's name appearing inside the master's handle and need a
+   * human before anything is merged.
+   */
   @Get('duplicate-creators')
   findDuplicates() {
     return this.duplicates.find();
   }
 
-  /** Merge every confidently-matched pair. Defaults to a dry run. */
+  /**
+   * Merge the `high`-confidence pairs. Defaults to a dry run. `review` pairs are
+   * never touched here — confirm those individually via POST /merge-creators.
+   */
   @Post('merge-duplicates')
   @HttpCode(HttpStatus.OK)
   mergeDuplicates(@Query('dryRun') dryRun?: string) {
@@ -41,7 +49,7 @@ export class MaintenanceController {
     return this.duplicates.mergeAll(!(dryRun === 'false' || dryRun === '0'));
   }
 
-  /** Merge a specific pair — for the ambiguous ones detection won't auto-pair. */
+  /** Merge a specific pair — how a reviewed `review`-grade match gets applied. */
   @Post('merge-creators')
   @HttpCode(HttpStatus.OK)
   mergeCreators(@Body() dto: MergeCreatorsDto) {

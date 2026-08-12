@@ -4,43 +4,64 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { CreatorMergeService, MergeResult } from '../creators/creator-merge.service';
 
 /**
- * Finds creator records that are the same person split across two rows, and
- * folds them back together.
+ * Finds creator records that are the same person split across two rows.
  *
  * The split: a signed contract that arrived without an Instagram handle (see
- * CreatorMergeService for the window in which the Outreach backend omitted it)
- * could not resolve against the master record, so it created a second row
- * holding the signer's email, phone, address and payout details — and no handle.
+ * CreatorMergeService) could not resolve against the master record, so it
+ * created a second row holding the signer's email, phone, address and payout
+ * details — and no handle.
  *
- * Re-syncing those contracts now heals them automatically, because the payload
- * carries both keys and CreatorsService.resolveExisting merges on an identity
- * split. This service covers the rest: pairs where no re-sync is coming, and
- * giving the team a reviewable list before anything is written.
+ * By construction the two rows share almost nothing. The master came from the
+ * stats sync carrying a handle and performance but no email; the duplicate
+ * carries an email and a contract but no handle. If they had a field in common
+ * they would have resolved to one record in the first place. So this reports
+ * two grades of match and treats them very differently:
  *
- * Matching is evidence-based, never fuzzy on names alone. A handle-less record
- * is only paired with a master when one of these ties them together:
+ *   high    Hard identity evidence — the same email or phone appears on both
+ *           sides, via the creator row itself, a contract's signer details, or
+ *           an address we actually sent outreach to. Safe to merge unattended.
  *
- *   - `email`     the master was emailed at exactly the duplicate's address
- *                 (EmailHistory.recipient), which is how outreach reached them;
- *   - `threadId`  both rows reference the same outreach email thread;
- *   - `phone`     both rows carry the same phone number.
+ *   review  The duplicate's name appears inside the master's handle ("Joe" in
+ *           "aibyjoe", "AIMAN" in "aiman.gn"), optionally corroborated by a
+ *           shared campaign. That is a strong hint and it is how these splits
+ *           usually look, but a name is not proof of identity — a human
+ *           confirms these one at a time via POST /maintenance/merge-creators.
  *
- * "Two creators are called Joe" is NOT evidence and will never produce a pair.
+ * `mergeAll` only ever merges `high`. Nothing gets folded together on the
+ * strength of a name resemblance without someone looking at it.
  */
 
-export type MatchEvidence = 'email' | 'threadId' | 'phone';
+export type MatchEvidence =
+  | 'email' // same address on both sides (creator, signer, or outreach recipient)
+  | 'phone' // same phone on both sides
+  | 'threadId' // same outreach email thread
+  | 'nameInHandle' // duplicate's name appears inside the master's handle
+  | 'sharedCampaign'; // both sides reference the same campaign
+
+export type Confidence = 'high' | 'review';
+
+/** Evidence that stands on its own; anything else needs human review. */
+const HARD_EVIDENCE: ReadonlySet<MatchEvidence> = new Set(['email', 'phone', 'threadId']);
+
+export interface CreatorBrief {
+  id: string;
+  creatorName: string | null;
+  instagramUsername: string | null;
+  email: string | null;
+  contracts: number;
+}
 
 export interface DuplicatePair {
   /** The record to keep — the master holding the Instagram handle. */
-  survivor: { id: string; creatorName: string | null; instagramUsername: string | null };
+  survivor: CreatorBrief;
   /** The handle-less record holding the contact + payout details. */
-  duplicate: {
-    id: string;
-    creatorName: string | null;
-    email: string | null;
-    contracts: number;
-  };
+  duplicate: CreatorBrief;
   evidence: MatchEvidence[];
+  confidence: Confidence;
+  /** Campaign names both sides reference, if any. */
+  sharedCampaigns: string[];
+  /** Other masters that also matched — present only when the match is unsure. */
+  alternatives: CreatorBrief[];
 }
 
 const norm = (v: string | null | undefined): string | null => {
@@ -57,6 +78,24 @@ const normPhone = (v: string | null | undefined): string | null => {
   return digits.length >= 7 ? digits : null;
 };
 
+/** Reduce a handle to comparable letters: "aiman.gn" → "aimangn". */
+const flatten = (v: string | null | undefined): string =>
+  String(v ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+
+/**
+ * Name parts worth matching on. Very short tokens ("jo", "li") and the generic
+ * ones that show up in handles regardless of who owns them would match far too
+ * much, so they are dropped.
+ */
+const STOPWORDS = new Set(['the', 'official', 'real', 'its', 'iam', 'mr', 'mrs', 'ms', 'dr']);
+const nameTokens = (name: string | null | undefined): string[] =>
+  String(name ?? '')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length >= 3 && !STOPWORDS.has(t));
+
 @Injectable()
 export class DuplicateCreatorsService {
   private readonly logger = new Logger(DuplicateCreatorsService.name);
@@ -67,147 +106,246 @@ export class DuplicateCreatorsService {
   ) {}
 
   /**
-   * Candidate duplicate pairs, each with the evidence that linked them.
-   * Read-only — nothing is written.
+   * Candidate pairs with the evidence and confidence for each, plus the
+   * handle-less records nothing could be tied to. Read-only.
    */
-  async find(): Promise<{ pairs: DuplicatePair[]; unmatched: DuplicatePair['duplicate'][] }> {
-    // Candidates: no handle, but they hold identity we could match on. A record
-    // with neither an email, thread nor phone has nothing to tie it to a master.
+  async find(): Promise<{
+    pairs: DuplicatePair[];
+    unmatched: CreatorBrief[];
+    counts: { high: number; review: number; unmatched: number };
+  }> {
+    // Candidates: no handle, but holding identity or a contract to match on.
     const candidates = await this.prisma.creator.findMany({
       where: {
         instagramUsername: null,
-        OR: [{ email: { not: null } }, { threadId: { not: null } }, { phoneNumber: { not: null } }],
+        OR: [
+          { email: { not: null } },
+          { threadId: { not: null } },
+          { phoneNumber: { not: null } },
+          { contracts: { some: {} } },
+        ],
       },
       select: {
         id: true,
         creatorName: true,
+        instagramUsername: true,
         email: true,
         threadId: true,
         phoneNumber: true,
-        _count: { select: { contracts: true } },
+        campaignName: true,
+        contracts: {
+          select: {
+            signerEmail: true,
+            signerPhone: true,
+            signerName: true,
+            campaignName: true,
+          },
+        },
       },
     });
-    if (candidates.length === 0) return { pairs: [], unmatched: [] };
+    if (candidates.length === 0) {
+      return { pairs: [], unmatched: [], counts: { high: 0, review: 0, unmatched: 0 } };
+    }
 
-    // Every possible survivor: a record that HAS a handle.
     const masters = await this.prisma.creator.findMany({
       where: { instagramUsername: { not: null } },
       select: {
         id: true,
         creatorName: true,
         instagramUsername: true,
+        email: true,
         threadId: true,
         phoneNumber: true,
+        campaignName: true,
+        contracts: { select: { signerEmail: true, signerPhone: true, campaignName: true } },
+        stats: { select: { campaignName: true } },
       },
     });
     if (masters.length === 0) {
-      return { pairs: [], unmatched: candidates.map((c) => this.asDuplicate(c)) };
+      const unmatched = candidates.map((c) => this.brief(c));
+      return {
+        pairs: [],
+        unmatched,
+        counts: { high: 0, review: 0, unmatched: unmatched.length },
+      };
     }
 
-    const masterIds = masters.map((m) => m.id);
-    const byThread = new Map<string, string>();
-    const byPhone = new Map<string, string>();
-    for (const m of masters) {
-      const t = norm(m.threadId);
-      if (t && !byThread.has(t)) byThread.set(t, m.id);
-      const p = normPhone(m.phoneNumber);
-      if (p && !byPhone.has(p)) byPhone.set(p, m.id);
-    }
-
-    // Which master was emailed at which address. This is the strongest link:
-    // outreach went to the address the creator later signed with.
-    const candidateEmails = candidates
-      .map((c) => norm(c.email))
-      .filter((e): e is string => e !== null);
-    const byRecipient = new Map<string, string>();
-    const ambiguousRecipients = new Set<string>();
+    // Outreach we actually sent, keyed by address. Bounded to the addresses we
+    // care about — this table holds one row per message.
+    const candidateEmails = [
+      ...new Set(
+        candidates
+          .flatMap((c) => [norm(c.email), ...c.contracts.map((ct) => norm(ct.signerEmail))])
+          .filter((e): e is string => e !== null),
+      ),
+    ];
+    const recipientsByMaster = new Map<string, Set<string>>();
     if (candidateEmails.length) {
       const rows = await this.prisma.emailHistory.findMany({
         where: {
-          creatorId: { in: masterIds },
-          // Filter in SQL rather than pulling every email ever sent: this table
-          // holds one row per message, so an unfiltered scan is unbounded.
+          creatorId: { in: masters.map((m) => m.id) },
           OR: candidateEmails.map((e) => ({
             recipient: { equals: e, mode: 'insensitive' as const },
           })),
         },
         select: { creatorId: true, recipient: true },
       });
-      const wanted = new Set(candidateEmails);
       for (const r of rows) {
         const rcpt = norm(r.recipient);
-        if (!rcpt || !r.creatorId || !wanted.has(rcpt)) continue;
-        const seen = byRecipient.get(rcpt);
-        if (seen && seen !== r.creatorId) {
-          // Two masters were both emailed at this address — a shared or agency
-          // inbox. Not evidence of anything; drop it and rely on the other
-          // signals rather than guessing which creator it belongs to.
-          ambiguousRecipients.add(rcpt);
-          continue;
-        }
-        if (!seen) byRecipient.set(rcpt, r.creatorId);
+        if (!rcpt || !r.creatorId) continue;
+        if (!recipientsByMaster.has(r.creatorId)) recipientsByMaster.set(r.creatorId, new Set());
+        recipientsByMaster.get(r.creatorId)!.add(rcpt);
       }
-      for (const rcpt of ambiguousRecipients) byRecipient.delete(rcpt);
     }
 
-    const masterById = new Map(masters.map((m) => [m.id, m]));
+    // Pre-compute each master's matchable identity once.
+    const masterIndex = masters.map((m) => ({
+      row: m,
+      emails: new Set(
+        [norm(m.email), ...m.contracts.map((c) => norm(c.signerEmail))]
+          .concat([...(recipientsByMaster.get(m.id) ?? [])])
+          .filter((e): e is string => e !== null),
+      ),
+      phones: new Set(
+        [normPhone(m.phoneNumber), ...m.contracts.map((c) => normPhone(c.signerPhone))].filter(
+          (p): p is string => p !== null,
+        ),
+      ),
+      thread: norm(m.threadId),
+      handle: flatten(m.instagramUsername),
+      nameBlob: flatten(m.creatorName) + flatten(m.instagramUsername),
+      campaigns: new Set(
+        [
+          norm(m.campaignName),
+          ...m.contracts.map((c) => norm(c.campaignName)),
+          ...m.stats.map((s) => norm(s.campaignName)),
+        ].filter((c): c is string => c !== null),
+      ),
+    }));
+
     const pairs: DuplicatePair[] = [];
-    const unmatched: DuplicatePair['duplicate'][] = [];
+    const unmatched: CreatorBrief[] = [];
 
     for (const c of candidates) {
-      const hits = new Map<string, Set<MatchEvidence>>();
-      const add = (id: string | undefined, ev: MatchEvidence) => {
-        if (!id || id === c.id) return;
-        if (!hits.has(id)) hits.set(id, new Set());
-        hits.get(id)!.add(ev);
-      };
-      const email = norm(c.email);
-      if (email) add(byRecipient.get(email), 'email');
-      const thread = norm(c.threadId);
-      if (thread) add(byThread.get(thread), 'threadId');
-      const phone = normPhone(c.phoneNumber);
-      if (phone) add(byPhone.get(phone), 'phone');
+      const cEmails = new Set(
+        [norm(c.email), ...c.contracts.map((ct) => norm(ct.signerEmail))].filter(
+          (e): e is string => e !== null,
+        ),
+      );
+      const cPhones = new Set(
+        [normPhone(c.phoneNumber), ...c.contracts.map((ct) => normPhone(ct.signerPhone))].filter(
+          (p): p is string => p !== null,
+        ),
+      );
+      const cThread = norm(c.threadId);
+      const cCampaigns = new Set(
+        [norm(c.campaignName), ...c.contracts.map((ct) => norm(ct.campaignName))].filter(
+          (x): x is string => x !== null,
+        ),
+      );
+      // Names to look for inside the handle — the creator's own name plus
+      // whatever they typed on the signing form.
+      const cTokens = [
+        ...new Set([
+          ...nameTokens(c.creatorName),
+          ...c.contracts.flatMap((ct) => nameTokens(ct.signerName)),
+        ]),
+      ];
 
-      // Ambiguous (two different masters matched) → leave it for a human.
-      if (hits.size !== 1) {
-        unmatched.push(this.asDuplicate(c));
+      const scored: { master: (typeof masterIndex)[number]; evidence: Set<MatchEvidence> }[] = [];
+      for (const m of masterIndex) {
+        if (m.row.id === c.id) continue;
+        const evidence = new Set<MatchEvidence>();
+
+        for (const e of cEmails) if (m.emails.has(e)) evidence.add('email');
+        for (const p of cPhones) if (m.phones.has(p)) evidence.add('phone');
+        if (cThread && m.thread === cThread) evidence.add('threadId');
+        // The name sitting inside the handle: "joe" within "aibyjoe".
+        if (m.handle && cTokens.some((t) => m.nameBlob.includes(t))) evidence.add('nameInHandle');
+        for (const camp of cCampaigns) if (m.campaigns.has(camp)) evidence.add('sharedCampaign');
+
+        // A shared campaign on its own says nothing — dozens of creators run the
+        // same campaign. It only counts as corroboration alongside another signal.
+        const meaningful = [...evidence].filter((e) => e !== 'sharedCampaign');
+        if (meaningful.length > 0) scored.push({ master: m, evidence });
+      }
+
+      if (scored.length === 0) {
+        unmatched.push(this.brief(c));
         continue;
       }
-      const [survivorId, evidence] = [...hits.entries()][0];
-      const master = masterById.get(survivorId)!;
+
+      // Hard evidence wins outright; otherwise fall back to the name match.
+      const hard = scored.filter((s) => [...s.evidence].some((e) => HARD_EVIDENCE.has(e)));
+      const pool = hard.length > 0 ? hard : scored;
+      const confidence: Confidence = hard.length > 0 ? 'high' : 'review';
+
+      // More than one master fits: never auto-merge, and show the alternatives.
+      if (pool.length > 1) {
+        const ranked = pool
+          .slice()
+          .sort((a, b) => b.evidence.size - a.evidence.size)
+          .map((s) => s.master);
+        pairs.push({
+          survivor: this.brief(ranked[0].row),
+          duplicate: this.brief(c),
+          evidence: [...pool[0].evidence],
+          confidence: 'review',
+          sharedCampaigns: [...cCampaigns].filter((x) => ranked[0].campaigns.has(x)),
+          alternatives: ranked.slice(1).map((m) => this.brief(m.row)),
+        });
+        continue;
+      }
+
+      const best = pool[0];
       pairs.push({
-        survivor: {
-          id: master.id,
-          creatorName: master.creatorName,
-          instagramUsername: master.instagramUsername,
-        },
-        duplicate: this.asDuplicate(c),
-        evidence: [...evidence],
+        survivor: this.brief(best.master.row),
+        duplicate: this.brief(c),
+        evidence: [...best.evidence],
+        confidence,
+        sharedCampaigns: [...cCampaigns].filter((x) => best.master.campaigns.has(x)),
+        alternatives: [],
       });
     }
 
-    return { pairs, unmatched };
+    // Surest first, so the reviewer works down a sensible list.
+    pairs.sort((a, b) => (a.confidence === b.confidence ? 0 : a.confidence === 'high' ? -1 : 1));
+
+    return {
+      pairs,
+      unmatched,
+      counts: {
+        high: pairs.filter((p) => p.confidence === 'high').length,
+        review: pairs.filter((p) => p.confidence === 'review').length,
+        unmatched: unmatched.length,
+      },
+    };
   }
 
   /**
-   * Merge every confidently-matched pair. `dryRun` reports the plan without
-   * writing. Each pair merges in its own transaction, so one failure cannot
-   * roll back the pairs that already succeeded.
+   * Merge the `high`-confidence pairs — those backed by a matching email, phone
+   * or outreach thread. `review` pairs are deliberately left alone: a name
+   * inside a handle is a good hint, not proof, and merging is destructive.
+   *
+   * `dryRun` reports the plan without writing. Each pair merges in its own
+   * transaction, so one failure cannot roll back the pairs that succeeded.
    */
   async mergeAll(dryRun = false): Promise<{
     dryRun: boolean;
     matched: number;
     merged: number;
     failed: number;
+    needsReview: number;
     unmatched: number;
     results: (MergeResult & { evidence: MatchEvidence[] })[];
     errors: { duplicateId: string; error: string }[];
   }> {
-    const { pairs, unmatched } = await this.find();
+    const { pairs, counts } = await this.find();
+    const auto = pairs.filter((p) => p.confidence === 'high');
     const results: (MergeResult & { evidence: MatchEvidence[] })[] = [];
     const errors: { duplicateId: string; error: string }[] = [];
 
-    for (const pair of pairs) {
+    for (const pair of auto) {
       try {
         const res = await this.merger.merge(pair.survivor.id, pair.duplicate.id, {
           dryRun,
@@ -223,26 +361,29 @@ export class DuplicateCreatorsService {
 
     return {
       dryRun,
-      matched: pairs.length,
+      matched: auto.length,
       merged: dryRun ? 0 : results.length,
       failed: errors.length,
-      unmatched: unmatched.length,
+      needsReview: counts.review,
+      unmatched: counts.unmatched,
       results,
       errors,
     };
   }
 
-  private asDuplicate(c: {
+  private brief(c: {
     id: string;
     creatorName: string | null;
+    instagramUsername: string | null;
     email: string | null;
-    _count: { contracts: number };
-  }): DuplicatePair['duplicate'] {
+    contracts?: unknown[];
+  }): CreatorBrief {
     return {
       id: c.id,
       creatorName: c.creatorName,
+      instagramUsername: c.instagramUsername,
       email: c.email,
-      contracts: c._count.contracts,
+      contracts: Array.isArray(c.contracts) ? c.contracts.length : 0,
     };
   }
 }
