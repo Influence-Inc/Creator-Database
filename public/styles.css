@@ -265,6 +265,10 @@ button {
   display: flex;
   align-items: center;
   gap: 9px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
 }
 .brand-mark svg {
   height: 13px;
@@ -347,15 +351,20 @@ button {
   align-items: center;
   gap: 8px;
   height: 40px;
-  padding: 0 14px;
+  padding: 0 10px 0 14px;
   border: 1px solid var(--border);
   border-radius: 9px;
   background: var(--surface-alt);
-  width: 260px;
+  /* Wide enough for the placeholder AND the trailing shortcut chip. */
+  width: 320px;
+  max-width: 100%;
 }
 .search span {
   color: var(--text-faint);
   font-size: 13px;
+}
+.search .search-i {
+  flex: none;
 }
 .search input {
   border: none;
@@ -363,7 +372,9 @@ button {
   outline: none;
   color: var(--text);
   font-size: 13.5px;
-  width: 100%;
+  /* min-width:0 lets the input shrink instead of pushing the chip out. */
+  flex: 1;
+  min-width: 0;
 }
 .chip {
   height: 40px;
@@ -385,7 +396,9 @@ button {
 .table {
   border: 1px solid var(--border);
   border-radius: 14px;
-  overflow: hidden;
+  /* `clip` not `hidden`: hidden would make this a scroll container and stop
+     the sticky column header from sticking to the viewport. */
+  overflow: clip;
   background: var(--surface);
 }
 .roster-grid {
@@ -394,7 +407,7 @@ button {
   align-items: center;
 }
 .roster-head {
-  padding: 13px 20px;
+  padding: 0 20px;
   font-size: 11.5px;
   font-weight: 700;
   text-transform: uppercase;
@@ -402,6 +415,43 @@ button {
   color: var(--text-faint);
   border-bottom: 1px solid var(--border);
   background: var(--surface-alt);
+  position: sticky;
+  top: 64px; /* clears the sticky topbar */
+  z-index: 5;
+}
+.rh {
+  padding: 13px 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.rh.sortable {
+  cursor: pointer;
+  user-select: none;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+}
+.rh.sortable:hover {
+  color: var(--text);
+}
+.rh.sorted {
+  color: var(--text);
+}
+.sort-arrow {
+  font-size: 10px;
+  opacity: 0.9;
+}
+/* Reserve the arrow's width on unsorted columns so headers don't shift. */
+.rh.sortable .sort-arrow::after {
+  content: '⇅';
+  opacity: 0.35;
+}
+.rh.sorted .sort-arrow::after {
+  content: '';
 }
 .roster-row {
   padding: 14px 20px;
@@ -409,11 +459,16 @@ button {
   cursor: pointer;
   background: var(--surface);
 }
-.roster-row.expanded {
-  background: var(--surface-alt);
-}
 .roster-row:hover {
   background: var(--surface-alt);
+}
+.roster-row:last-child {
+  border-bottom: none;
+}
+/* Chevron leans in on hover so the whole row reads as one click target. */
+.roster-row:hover .chev {
+  color: var(--text);
+  transform: translateX(3px);
 }
 .creator-cell {
   display: flex;
@@ -433,7 +488,6 @@ button {
   font-size: 13px;
   flex: none;
 }
-.roster-row.expanded .pfp,
 .roster-row:hover .pfp {
   background: var(--surface);
 }
@@ -462,7 +516,6 @@ button {
   font-weight: 700;
   color: var(--text-muted);
 }
-.roster-row.expanded .plat,
 .roster-row:hover .plat {
   background: var(--surface);
 }
@@ -482,33 +535,10 @@ button {
   padding: 3px 9px;
 }
 .chev {
-  font-size: 13px;
+  font-size: 15px;
   color: var(--text-faint);
   text-align: center;
-  transition: transform 0.2s ease;
-}
-.chev.open {
-  transform: rotate(90deg);
-}
-.row-detail {
-  padding: 20px 20px 24px 70px;
-  background: var(--surface-alt);
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  gap: 40px;
-  flex-wrap: wrap;
-  align-items: center;
-}
-.kv .k {
-  font-size: 11px;
-  color: var(--text-faint);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  margin-bottom: 4px;
-}
-.kv .v {
-  font-size: 14px;
-  font-weight: 600;
+  transition: transform 0.18s ease, color 0.18s ease;
 }
 .btn-accent {
   height: 38px;
@@ -552,9 +582,38 @@ button {
 }
 .profile-hero {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 22px;
+}
+.hero-id {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+.hero-idtext {
+  min-width: 0;
+}
+.hero-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   flex-wrap: wrap;
+  margin-top: 5px;
+}
+.hero-plats {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.hero-plat {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
 }
 .pfp-lg {
   width: 64px;
@@ -573,21 +632,33 @@ button {
   font-size: 20px;
   font-weight: 700;
 }
+/* Performance stats sit in the profile header (there is no Performance tab) —
+   a single strip that wraps into a grid on narrow screens. */
 .hero-stats {
-  display: flex;
-  gap: 28px;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(116px, 1fr));
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.stat {
+  background: var(--surface);
+  padding: 14px 16px;
 }
 .stat .k {
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--text-faint);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+  white-space: nowrap;
 }
 .stat .v {
-  font-size: 15px;
+  font-size: 19px;
   font-weight: 700;
-  margin-top: 3px;
+  margin-top: 4px;
+  letter-spacing: -0.01em;
 }
 .tabs {
   display: flex;
@@ -614,28 +685,6 @@ button {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 20px;
-}
-.grid-4 {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 16px;
-}
-.stat-card {
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  background: var(--surface);
-  padding: 20px;
-}
-.stat-card .k {
-  font-size: 11px;
-  color: var(--text-faint);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-.stat-card .v {
-  font-size: 22px;
-  font-weight: 700;
-  margin-top: 6px;
 }
 .detail-list {
   display: flex;
@@ -908,8 +957,7 @@ button {
   .roster-grid .hide-sm {
     display: none;
   }
-  .grid-2,
-  .grid-4 {
+  .grid-2 {
     grid-template-columns: 1fr;
   }
 }
@@ -1016,6 +1064,11 @@ button {
   outline: none;
   font-family: inherit;
 }
+/* Auto-focused on open, so the standard focus ring would just draw a heavy
+   box around the whole palette input every time. */
+.cmdk-input:focus-visible {
+  outline: none;
+}
 .cmdk-list {
   flex: 1;
   overflow-y: auto;
@@ -1082,3 +1135,214 @@ button {
   font-size: 11.5px;
 }
 .cmdk-foot .cmdk-kbd { margin-right: 4px; }
+
+/* ---- Topbar breadcrumbs ------------------------------------------------ */
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.crumb-link {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
+  color: var(--text-muted);
+}
+.crumb-link:hover {
+  color: var(--text);
+}
+.crumb-sep {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+.crumb-now {
+  color: var(--text);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40vw;
+}
+/* ---- Roster summary tiles --------------------------------------------- */
+.summary-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+.sum-tile {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 14px 16px;
+}
+.sum-tile .k {
+  font-size: 10.5px;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.sum-tile .v {
+  font-size: 20px;
+  font-weight: 700;
+  margin-top: 4px;
+  letter-spacing: -0.01em;
+}
+
+/* ---- Search box extras ------------------------------------------------- */
+.search {
+  position: relative;
+}
+.search-x {
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 4px;
+  line-height: 1;
+}
+.search-x:hover {
+  color: var(--text);
+}
+#search-slot {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+/* Shortcut hint inside the search box — the roster's only search affordance,
+   so it's also where the quick-search palette is advertised. */
+.search-kbd {
+  cursor: pointer;
+  white-space: nowrap;
+}
+.search-kbd:hover {
+  border-color: var(--text-faint);
+  color: var(--text);
+}
+
+/* ---- Loading skeletons ------------------------------------------------- */
+.skel-row {
+  cursor: default;
+}
+.skel {
+  background: var(--surface-alt);
+  border-radius: 6px;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+.skel-pfp {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  flex: none;
+}
+.skel-line {
+  height: 10px;
+  margin: 5px 0;
+}
+.skel-line.sm {
+  height: 8px;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+/* ---- Click-to-copy values ---------------------------------------------- */
+.copyable {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  border-radius: 5px;
+  padding: 1px 4px;
+  margin: -1px -4px;
+}
+.copyable:hover {
+  background: var(--surface-alt);
+}
+.copy-i {
+  font-size: 11px;
+  color: var(--text-faint);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.copyable:hover .copy-i {
+  opacity: 1;
+}
+
+/* ---- Toast ------------------------------------------------------------- */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 18px;
+  border-radius: 10px;
+  background: var(--accent-bg);
+  color: var(--accent-text);
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.3);
+  animation: toastIn 0.2s ease;
+}
+.toast.err {
+  background: var(--risk-high-fg);
+  color: #fff;
+}
+.toast-i {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: rgba(127, 127, 127, 0.28);
+  font-size: 11px;
+}
+@keyframes toastIn {
+  from { opacity: 0; transform: translate(-50%, 10px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+/* Vertical stack used inside tab panels. */
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* Richer empty states. */
+.empty-t {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+.empty-s {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-top: 6px;
+}
+
+/* Consistent keyboard focus ring across interactive elements. */
+button:focus-visible,
+input:focus-visible,
+.copyable:focus-visible {
+  outline: 2px solid var(--text-faint);
+  outline-offset: 2px;
+}
+
+@media (max-width: 720px) {
+  .hero-stats {
+    grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+  }
+  .roster-head {
+    top: 0;
+  }
+}
