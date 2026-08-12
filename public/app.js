@@ -115,8 +115,15 @@
   // ---- helpers ------------------------------------------------------------
   // '⌘' on Apple hardware, 'Ctrl ' elsewhere — a Windows admin shouldn't be
   // told to press a key their keyboard doesn't have.
-  var IS_APPLE = /Mac|iPhone|iPad|iPod/.test(
-    (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || navigator.userAgent,
+  // Case-insensitive on purpose: navigator.userAgentData.platform reports
+  // 'macOS' (lower-case m) while navigator.platform reports 'MacIntel', and
+  // userAgentData wins where both exist — a case-sensitive /Mac/ silently told
+  // every Mac user to press Ctrl.
+  var IS_APPLE = /mac|iphone|ipad|ipod/i.test(
+    (navigator.userAgentData && navigator.userAgentData.platform) ||
+      navigator.platform ||
+      navigator.userAgent ||
+      '',
   );
   function modKeyLabel() {
     return IS_APPLE ? '⌘' : 'Ctrl ';
@@ -662,31 +669,8 @@
     return new Array(n + 1).join(one);
   }
 
-  // Compact orientation tiles above the table — they describe the CURRENT
-  // filtered view, so they change as you search or switch segments.
-  function rosterSummary(list) {
-    var views = 0;
-    var camps = 0;
-    for (var i = 0; i < list.length; i++) {
-      views += list[i].views || 0;
-      camps += list[i].campaigns || 0;
-    }
-    return (
-      '<div class="summary-row">' +
-      summaryTile('Creators shown', String(list.length)) +
-      summaryTile('Campaigns', String(camps)) +
-      summaryTile('Combined views', fmtNum(views)) +
-      '</div>'
-    );
-  }
-  function summaryTile(k, v) {
-    return (
-      '<div class="sum-tile"><div class="k">' + esc(k) + '</div><div class="v">' + esc(v) + '</div></div>'
-    );
-  }
-
-  // Everything below the page header — re-rendered on its own while typing so
-  // the search box keeps focus.
+  // The table — re-rendered on its own while typing so the search box keeps
+  // focus and the caret doesn't jump.
   function rosterBody() {
     var data = state.roster;
     var list = visibleCreators();
@@ -706,7 +690,7 @@
     } else {
       rows = list.map(rosterRow).join('');
     }
-    return rosterSummary(list) + '<div class="table">' + rosterHead() + rows + '</div>';
+    return '<div class="table">' + rosterHead() + rows + '</div>';
   }
 
   // Trailing control inside the search box. The two states are mutually

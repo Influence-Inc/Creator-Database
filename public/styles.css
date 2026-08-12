@@ -1166,31 +1166,6 @@ button {
   text-overflow: ellipsis;
   max-width: 40vw;
 }
-/* ---- Roster summary tiles --------------------------------------------- */
-.summary-row {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 12px;
-}
-.sum-tile {
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface);
-  padding: 14px 16px;
-}
-.sum-tile .k {
-  font-size: 10.5px;
-  color: var(--text-faint);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-.sum-tile .v {
-  font-size: 20px;
-  font-weight: 700;
-  margin-top: 4px;
-  letter-spacing: -0.01em;
-}
-
 /* ---- Search box extras ------------------------------------------------- */
 .search {
   position: relative;
