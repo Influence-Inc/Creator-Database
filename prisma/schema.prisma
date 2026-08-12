@@ -86,6 +86,18 @@ model Creator {
   addressPostalCode String?
   addressCountry    String?
 
+  /// Payout/bank details captured on the creator's Payment account card in the
+  /// admin UI (account holder, bank name, account number, IBAN, routing, IFSC,
+  /// PAN, SWIFT, tax id). Stored as JSON so the shape can vary by country. This
+  /// is the source of truth for a creator's payout details — held on the master
+  /// Creator record so payout information can be captured BEFORE a contract is
+  /// signed. When a signed contract exists, `updateDetails` also mirrors these
+  /// values onto the latest `Contract.paymentDetails` so per-contract
+  /// payment-of-record documents stay in sync. Sensitive — protected by the same
+  /// x-api-key guard as every other write, and only ever read back through the
+  /// authenticated contract endpoints.
+  paymentDetails Json?
+
   // --- Campaign info -------------------------------------------------------
   campaignName    String?
   campaignId      String?
