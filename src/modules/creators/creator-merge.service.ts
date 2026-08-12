@@ -82,6 +82,14 @@ const repr = (v: unknown): string | null => {
   return String(v);
 };
 
+/**
+ * JSON for the audit trail. BigInt has no JSON representation and would throw
+ * mid-transaction, taking the whole merge down over a logging detail — render it
+ * as a string instead.
+ */
+const safeJson = (value: unknown): string =>
+  JSON.stringify(value, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
+
 @Injectable()
 export class CreatorMergeService {
   private readonly logger = new Logger(CreatorMergeService.name);
@@ -140,11 +148,10 @@ export class CreatorMergeService {
     // CreatorStats is unique on (creatorId, statsCampaignId), so a stats row for
     // a campaign the survivor already has cannot be re-pointed — the survivor's
     // own row is the one to keep.
+    // Full rows, not just ids: the colliding ones get deleted, and the snapshot
+    // written below is the only copy that survives.
     const [dupStats, survivorStats] = await Promise.all([
-      tx.creatorStats.findMany({
-        where: { creatorId: duplicateId },
-        select: { id: true, statsCampaignId: true },
-      }),
+      tx.creatorStats.findMany({ where: { creatorId: duplicateId } }),
       tx.creatorStats.findMany({
         where: { creatorId: survivorId },
         select: { statsCampaignId: true },
@@ -212,6 +219,18 @@ export class CreatorMergeService {
           field: 'merged',
           oldValue: this.label(duplicate),
           newValue: `absorbed duplicate ${duplicateId}`,
+        },
+        // A complete copy of everything this merge destroyed, so the operation
+        // can be reconstructed by hand from the audit trail alone. Most of a
+        // merge only re-points rows, but two things genuinely go away: the
+        // duplicate row itself (including any field the survivor already had,
+        // which is deliberately not copied over) and its stats for a campaign
+        // the survivor also covers. Without a database backup this entry is the
+        // only record of them.
+        {
+          field: 'merged_snapshot',
+          oldValue: safeJson({ creator: duplicate, droppedStats: statsToDrop }),
+          newValue: null,
         },
         ...filledFields.map((f) => ({ field: f.field, oldValue: null, newValue: f.value })),
       ],

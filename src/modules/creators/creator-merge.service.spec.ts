@@ -159,6 +159,49 @@ describe('CreatorMergeService.merge', () => {
     expect(changes[0].field).toBe('merged');
   });
 
+  it('archives everything it destroys, so the log is the undo', async () => {
+    // The two things a merge really removes: the duplicate row (including the
+    // fields the survivor already had, which are NOT copied over) and stats for
+    // a campaign the survivor also covers.
+    tx.creatorStats.findMany = jest.fn(({ where }: any) =>
+      Promise.resolve(
+        where.creatorId === 'dupe'
+          ? [{ id: 's1', statsCampaignId: 'shared', totalViews: 42 }]
+          : [{ statsCampaignId: 'shared' }],
+      ),
+    );
+
+    await service.merge('master', 'dupe');
+
+    const changes = activityLog.record.mock.calls[0][1];
+    const snap = changes.find((c: any) => c.field === 'merged_snapshot');
+    expect(snap).toBeDefined();
+
+    const archived = JSON.parse(snap.oldValue);
+    // The duplicate's own name would otherwise be lost — the survivor keeps its.
+    expect(archived.creator.creatorName).toBe('Joe Marquez');
+    expect(archived.creator.email).toBe('aibyjoe.ai@gmail.com');
+    // The dropped stats row is archived in full, not just its id.
+    expect(archived.droppedStats).toHaveLength(1);
+    expect(archived.droppedStats[0].totalViews).toBe(42);
+  });
+
+  it('survives a BigInt in the archived rows', async () => {
+    tx.creatorStats.findMany = jest.fn(({ where }: any) =>
+      Promise.resolve(
+        where.creatorId === 'dupe'
+          ? [{ id: 's1', statsCampaignId: 'shared', totalViews: BigInt(9007199254740993n) }]
+          : [{ statsCampaignId: 'shared' }],
+      ),
+    );
+
+    // Plain JSON.stringify throws on BigInt; that must not take down the merge.
+    await expect(service.merge('master', 'dupe')).resolves.toBeDefined();
+    const changes = activityLog.record.mock.calls[0][1];
+    const snap = changes.find((c: any) => c.field === 'merged_snapshot');
+    expect(JSON.parse(snap.oldValue).droppedStats[0].totalViews).toBe('9007199254740993');
+  });
+
   it('refuses to merge a creator into itself', async () => {
     await expect(service.merge('master', 'master')).rejects.toThrow(/must differ/);
   });
