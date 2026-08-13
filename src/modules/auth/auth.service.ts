@@ -28,16 +28,27 @@ export class AuthService implements OnModuleInit {
       '';
     if (configured) {
       this.secret = configured;
-    } else {
-      // No stable secret configured — generate an ephemeral one so tokens are
-      // still unforgeable, but warn that sessions reset on restart / per replica.
-      this.secret = randomBytes(32).toString('hex');
-      if (this.isEnforced()) {
-        this.logger.warn(
-          'No AUTH_SESSION_SECRET / INTERNAL_API_KEY set — using an ephemeral signing secret; sessions will not survive restarts or span multiple instances.',
-        );
-      }
+      return;
     }
+    // No explicit secret. As long as an admin password is set (auth-enforced
+    // deployments), derive a stable per-deployment secret from it so sessions
+    // survive restarts / span replicas. The domain-separation prefix keeps this
+    // key distinct from the password itself, and the password is already the
+    // highest-privilege secret in the system — deriving from it doesn't widen
+    // the blast radius, and it fixes the "logged out on every deploy" pain that
+    // an ephemeral per-boot secret used to cause.
+    const adminPassword = this.config.get<string>('auth.adminPassword') ?? '';
+    if (adminPassword) {
+      this.secret = createHmac('sha256', 'cdb-session-v1').update(adminPassword).digest('hex');
+      this.logger.warn(
+        'No AUTH_SESSION_SECRET / INTERNAL_API_KEY set — deriving the session signing key from ADMIN_PASSWORD. Set AUTH_SESSION_SECRET explicitly to rotate independently.',
+      );
+      return;
+    }
+    // Nothing to derive from either (auth also isn't enforced). Fall back to
+    // an ephemeral key so tokens stay unforgeable in dev; sessions won't
+    // survive restarts, but nothing in this mode expects them to.
+    this.secret = randomBytes(32).toString('hex');
   }
 
   /** True once an admin password is configured (auth is then enforced). */
@@ -80,6 +91,28 @@ export class AuthService implements OnModuleInit {
     const payload = { sub: subject, exp: Date.now() + this.ttlMs() };
     const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
     return `${body}.${this.sign(body)}`;
+  }
+
+  /**
+   * Milliseconds until the token expires, or null if it's malformed / already
+   * expired / has no signature match. Used by the sliding-refresh middleware to
+   * decide whether it's time to mint a fresh cookie.
+   */
+  remainingMs(token: string | undefined | null): number | null {
+    if (!token || typeof token !== 'string') return null;
+    const dot = token.lastIndexOf('.');
+    if (dot <= 0) return null;
+    const body = token.slice(0, dot);
+    const sig = token.slice(dot + 1);
+    if (!this.safeEqual(sig, this.sign(body))) return null;
+    try {
+      const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+      if (!payload || typeof payload.exp !== 'number') return null;
+      const remaining = payload.exp - Date.now();
+      return remaining > 0 ? remaining : null;
+    } catch {
+      return null;
+    }
   }
 
   /** Verify a session token's signature + expiry. Returns the subject or null. */
