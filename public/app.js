@@ -44,6 +44,12 @@
     contractsLoading: false,
     revealPay: false,
     modalContractId: null,
+    // Delete-creator confirmation modal. `deleteConfirmText` is the value of the
+    // "type DELETE" input; the confirm button is only enabled once it matches.
+    deleteOpen: false,
+    deleteConfirmText: '',
+    deleting: false,
+    deleteError: null,
     // Cmd+K command palette — universal search across the loaded roster.
     cmdkOpen: false,
     cmdkQuery: '',
@@ -51,6 +57,10 @@
     // Transient confirmation banner ({text, kind}) — cleared on a timer.
     toast: null,
   };
+
+  // The exact string an admin has to type to enable the delete-creator button.
+  // Case-sensitive on purpose — a slip of the shift key shouldn't confirm.
+  var DELETE_CONFIRM_WORD = 'DELETE';
 
   // Tabs surfaced in the URL (profile view). Kept in sync with TAB_DEFS below.
   // 'contract' is the default, so it's the tab a bare '#/c/:id' URL lands on.
@@ -103,6 +113,9 @@
     state.editContact = false;
     state.editPayment = false;
     state.saveError = null;
+    state.deleteOpen = false;
+    state.deleteConfirmText = '';
+    state.deleteError = null;
     if (r.selectedId) {
       if (!state.profile || state.profile.id !== r.selectedId) {
         loadProfile(r.selectedId);
@@ -520,6 +533,74 @@
     });
   }
 
+  // Hard-delete the currently-open creator. The server cascades to stats +
+  // contracts and nulls the reference on activity logs — after this returns,
+  // there is nothing to route back to, so we drop the profile from state and
+  // navigate to the roster (also removing the row from our local cache so the
+  // list doesn't briefly show a "ghost" entry until the next reload).
+  function confirmDelete() {
+    if (state.deleting) return;
+    if (state.deleteConfirmText !== DELETE_CONFIRM_WORD) return;
+    var id = state.selectedId;
+    if (!id) return;
+    state.deleting = true;
+    state.deleteError = null;
+    render();
+    fetch('/creator/' + encodeURIComponent(id), {
+      method: 'DELETE',
+      credentials: 'same-origin',
+    })
+      .then(function (r) {
+        if (r.status === 401) {
+          state.view = 'login';
+          state.selectedId = null;
+          throw new Error('unauthorized');
+        }
+        return r.text().then(function (raw) {
+          var parsed = null;
+          try { parsed = raw ? JSON.parse(raw) : null; } catch (_) { /* not JSON */ }
+          return { ok: r.ok, status: r.status, j: parsed, raw: raw };
+        });
+      })
+      .then(function (res) {
+        if (!res.ok) {
+          var m = res.j && res.j.message;
+          var msg = Array.isArray(m) ? m.join(', ') : m || (res.raw ? String(res.raw).slice(0, 300) : 'Delete failed');
+          console.error('[confirmDelete] DELETE /creator/' + id + ' → ' + res.status, res.j || res.raw);
+          throw new Error('HTTP ' + res.status + ': ' + msg);
+        }
+        // Drop the row from the local roster cache so the list updates without
+        // a full reload; the next natural /roster fetch will re-confirm it.
+        if (state.roster && Array.isArray(state.roster.creators)) {
+          state.roster.creators = state.roster.creators.filter(function (c) { return c.id !== id; });
+          if (typeof state.roster.total === 'number' && state.roster.total > 0) state.roster.total -= 1;
+        }
+        state.deleting = false;
+        state.deleteOpen = false;
+        state.deleteConfirmText = '';
+        state.deleteError = null;
+        state.profile = null;
+        state.selectedId = null;
+        state.editContact = false;
+        state.editPayment = false;
+        state.contractsFull = null;
+        state.creatorPayment = null;
+        syncUrlToState();
+        render();
+        showToast('Creator deleted');
+      })
+      .catch(function (err) {
+        state.deleting = false;
+        if (err && err.message === 'unauthorized') {
+          render();
+          return;
+        }
+        state.deleteError = (err && err.message) || 'Delete failed';
+        console.error('[confirmDelete] failed:', err);
+        render();
+      });
+  }
+
   function savePayment() {
     if (state.saving) return;
     saveDetails(
@@ -802,7 +883,8 @@
         '<button class="back-btn" data-act="back">← Back to roster</button>' +
         heroCard(p) +
         tabsBar() +
-        tabContent(p);
+        tabContent(p) +
+        dangerZone(p);
     }
     return (
       '<div class="app">' +
@@ -811,7 +893,76 @@
       inner +
       '</div>' +
       contractModal() +
+      deleteModal() +
       '</div>'
+    );
+  }
+
+  // Destructive-actions block at the bottom of the profile page. Deliberately
+  // placed below every other tab so it's never the first thing an admin sees,
+  // and requires typing DELETE in a confirm dialog before the request goes.
+  function dangerZone(p) {
+    var signed = (p.contracts || []).length;
+    var camps = Number(p.campaigns || 0);
+    var cascadeBits = [];
+    if (signed > 0) cascadeBits.push(signed + ' signed contract' + (signed === 1 ? '' : 's'));
+    if (camps > 0) cascadeBits.push(camps + ' campaign row' + (camps === 1 ? '' : 's'));
+    var cascadeHint = cascadeBits.length
+      ? '<div class="danger-hint">Deleting also removes ' + cascadeBits.join(' and ') + ' on record.</div>'
+      : '';
+    return (
+      '<div class="card danger-zone">' +
+      '<div class="danger-title">Danger zone</div>' +
+      '<div class="danger-row">' +
+      '<div class="danger-copy">' +
+      '<div class="danger-lead">Delete this creator</div>' +
+      '<div class="danger-sub">Removes the master record permanently. This cannot be undone.</div>' +
+      cascadeHint +
+      '</div>' +
+      '<button class="btn-danger" data-act="delete-open">Delete creator</button>' +
+      '</div></div>'
+    );
+  }
+
+  // Type-to-confirm dialog for a hard delete. The confirm button stays disabled
+  // until the input equals DELETE_CONFIRM_WORD exactly (case-sensitive on
+  // purpose — leaves no room for a "delete" typed on autopilot).
+  function deleteModal() {
+    if (!state.deleteOpen) return '';
+    var p = state.profile || {};
+    var identity = p.name || p.handle || 'this creator';
+    var matched = state.deleteConfirmText === DELETE_CONFIRM_WORD;
+    var confirmDisabled = state.deleting || !matched;
+    var err = state.deleteError
+      ? '<div class="save-err" role="alert">' + esc(state.deleteError) + '</div>'
+      : '';
+    return (
+      '<div class="modal-overlay" data-act="delete-backdrop">' +
+      '<div class="modal delete-modal" role="dialog" aria-labelledby="del-title" aria-modal="true">' +
+      '<div class="modal-head">' +
+      '<div id="del-title" style="font-size:16px;font-weight:700">Delete creator?</div>' +
+      '<button class="modal-x" data-act="delete-cancel" aria-label="Close"' +
+      (state.deleting ? ' disabled' : '') + '>✕</button>' +
+      '</div>' +
+      '<div class="modal-body">' +
+      '<p class="delete-lead">You are about to permanently delete <strong>' + esc(identity) + '</strong>. ' +
+      'Their contracts and campaign stats will be removed with them, and this cannot be undone.</p>' +
+      '<label class="delete-label" for="delete-confirm-input">Type <span class="mono">' +
+      esc(DELETE_CONFIRM_WORD) +
+      '</span> to confirm</label>' +
+      '<input id="delete-confirm-input" class="delete-input" type="text" autocomplete="off" ' +
+      'spellcheck="false" autocapitalize="off" value="' + esc(state.deleteConfirmText) + '"' +
+      (state.deleting ? ' disabled' : '') + '>' +
+      err +
+      '<div class="delete-actions">' +
+      '<button class="linklike" data-act="delete-cancel"' +
+      (state.deleting ? ' disabled' : '') + '>Cancel</button>' +
+      '<button class="btn-danger" data-act="delete-confirm"' +
+      (confirmDisabled ? ' disabled' : '') + '>' +
+      (state.deleting ? 'Deleting…' : 'Delete creator') +
+      '</button>' +
+      '</div>' +
+      '</div></div></div>'
     );
   }
 
@@ -1480,11 +1631,27 @@
         try { input.setSelectionRange(input.value.length, input.value.length); } catch (_) {}
       }
     }
+    // Same treatment for the delete-confirm input — auto-focus on open, and
+    // preserve focus across the render triggered by a failed request.
+    if (state.deleteOpen) {
+      var dinput = document.getElementById('delete-confirm-input');
+      if (dinput && document.activeElement !== dinput) {
+        dinput.focus();
+        try { dinput.setSelectionRange(dinput.value.length, dinput.value.length); } catch (_) {}
+      }
+    }
   }
 
   root.addEventListener('click', function (e) {
-    // Clicking the dimmed backdrop (but not the dialog) closes the modal.
-    if (e.target.classList && e.target.classList.contains('modal-overlay')) {
+    // Clicking the dimmed backdrop (but not the dialog) closes the contract
+    // modal. The delete-confirm modal owns its own data-act on the overlay so
+    // its dismissal path can also honour the `deleting` in-flight guard —
+    // don't hijack that click here.
+    if (
+      e.target.classList &&
+      e.target.classList.contains('modal-overlay') &&
+      e.target.getAttribute('data-act') !== 'delete-backdrop'
+    ) {
       return setState({ modalContractId: null });
     }
     var el = e.target.closest('[data-act]');
@@ -1572,6 +1739,34 @@
     }
     if (act === 'cancel-payment') return setState({ editPayment: false, saveError: null });
     if (act === 'save-payment') return savePayment();
+    // ---- delete creator (type-to-confirm) ----
+    if (act === 'delete-open') {
+      return setState({
+        deleteOpen: true,
+        deleteConfirmText: '',
+        deleteError: null,
+      });
+    }
+    if (act === 'delete-cancel') {
+      if (state.deleting) return;
+      return setState({
+        deleteOpen: false,
+        deleteConfirmText: '',
+        deleteError: null,
+      });
+    }
+    if (act === 'delete-backdrop') {
+      // Backdrop click dismisses only when the click actually landed on the
+      // backdrop itself (not on the dialog contents that bubble up here).
+      if (e.target.closest('.modal')) return;
+      if (state.deleting) return;
+      return setState({
+        deleteOpen: false,
+        deleteConfirmText: '',
+        deleteError: null,
+      });
+    }
+    if (act === 'delete-confirm') return confirmDelete();
     if (act === 'signout') {
       fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(function () {});
       setState({ view: 'login', username: '', password: '', selectedId: null });
@@ -1616,6 +1811,10 @@
     }
     if (e.key === 'Escape') {
       if (state.cmdkOpen) return setState({ cmdkOpen: false, cmdkQuery: '' });
+      if (state.deleteOpen) {
+        if (state.deleting) return;
+        return setState({ deleteOpen: false, deleteConfirmText: '', deleteError: null });
+      }
       if (state.modalContractId !== null) return setState({ modalContractId: null });
     }
     if (state.cmdkOpen && (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter')) {
@@ -1686,6 +1885,18 @@
       state.cmdkQuery = e.target.value;
       state.cmdkIndex = 0;
       renderCmdkList();
+      return;
+    }
+    if (e.target.id === 'delete-confirm-input') {
+      // Toggle the confirm button in place — a full re-render would drop focus
+      // out of the input mid-type.
+      state.deleteConfirmText = e.target.value;
+      var btn = document.querySelector('[data-act="delete-confirm"]');
+      if (btn) {
+        var enable = !state.deleting && state.deleteConfirmText === DELETE_CONFIRM_WORD;
+        if (enable) btn.removeAttribute('disabled');
+        else btn.setAttribute('disabled', '');
+      }
       return;
     }
     // fall through to roster search handler below
