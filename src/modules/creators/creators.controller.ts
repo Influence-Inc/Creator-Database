@@ -9,7 +9,10 @@ import {
   Patch,
   Post,
   Query,
+  UseGuards,
 } from '@nestjs/common';
+import { Public } from '../../common/decorators/public.decorator';
+import { AdminWriteGuard } from '../../common/guards/admin-write.guard';
 import { CreatorsService } from './creators.service';
 import { CategorizeCreatorsDto } from './dto/categorize-creators.dto';
 import { CreateCreatorDto } from './dto/create-creator.dto';
@@ -85,7 +88,14 @@ export class CreatorsController {
     return this.creatorsService.getActivity(id);
   }
 
-  /** Delete a single creator (cascades to its stats + contracts). */
+  /**
+   * Delete a single creator (cascades to its stats + contracts). Called from
+   * the admin dashboard, so @Public bypasses the global write guard (which only
+   * accepts the x-api-key) and AdminWriteGuard then accepts EITHER the admin
+   * session cookie OR the x-api-key — matching how /roster/:id/details works.
+   */
+  @Public()
+  @UseGuards(AdminWriteGuard)
   @Delete('creator/:id')
   remove(@Param('id') id: string) {
     return this.creatorsService.remove(id);
