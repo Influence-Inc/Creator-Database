@@ -1321,3 +1321,117 @@ input:focus-visible,
     top: 0;
   }
 }
+
+/* ---- Danger zone + delete-confirm modal -------------------------------- */
+/* Reused between the profile's Danger zone card and the confirm dialog so
+   the destructive action reads consistently in both places. Red is derived
+   at the button (not tokenised) — it's the only danger surface in the app
+   and adding a token felt over-abstracted. */
+.danger-zone {
+  margin-top: 22px;
+  border-color: rgba(220, 38, 38, 0.35);
+}
+[data-theme='dark'] .danger-zone {
+  border-color: rgba(220, 38, 38, 0.4);
+}
+.danger-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #b91c1c;
+  margin-bottom: 14px;
+}
+[data-theme='dark'] .danger-title {
+  color: #fca5a5;
+}
+.danger-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+.danger-copy {
+  min-width: 0;
+  flex: 1 1 260px;
+}
+.danger-lead {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.danger-sub {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+.danger-hint {
+  font-size: 12.5px;
+  color: var(--text-faint);
+  margin-top: 6px;
+}
+.btn-danger {
+  height: 38px;
+  padding: 0 18px;
+  border-radius: 8px;
+  border: 1px solid rgba(220, 38, 38, 0.5);
+  background: #dc2626;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn-danger:hover:not(:disabled) {
+  background: #b91c1c;
+  border-color: #b91c1c;
+}
+.btn-danger:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+[data-theme='dark'] .btn-danger {
+  border-color: rgba(220, 38, 38, 0.6);
+}
+
+.delete-modal {
+  max-width: 480px;
+}
+.delete-lead {
+  font-size: 13.5px;
+  color: var(--text);
+  line-height: 1.55;
+  margin-bottom: 18px;
+}
+.delete-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+.delete-input {
+  width: 100%;
+  height: 38px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-alt);
+  color: var(--text);
+  padding: 0 12px;
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+  letter-spacing: 0.02em;
+  margin-bottom: 14px;
+}
+.delete-input:focus {
+  border-color: var(--text-faint);
+}
+.delete-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 16px;
+  margin-top: 6px;
+}
