@@ -533,19 +533,52 @@
     });
   }
 
-  // Hard-delete the currently-open creator. The server cascades to stats +
-  // contracts and nulls the reference on activity logs — after this returns,
-  // there is nothing to route back to, so we drop the profile from state and
-  // navigate to the roster (also removing the row from our local cache so the
-  // list doesn't briefly show a "ghost" entry until the next reload).
+  // Hard-delete the currently-open creator. Optimistic — the UI drops the row
+  // and navigates back to the roster immediately, while the DELETE request
+  // finishes in the background. The server cascade (contracts, stats, activity
+  // log fk-null) can take a noticeable second on a heavy creator, and there's
+  // no reason to make the admin stare at a spinner for it. If the request
+  // actually fails, we put the row back and surface an error toast.
   function confirmDelete() {
     if (state.deleting) return;
     if (state.deleteConfirmText !== DELETE_CONFIRM_WORD) return;
     var id = state.selectedId;
     if (!id) return;
+
+    // Snapshot what we're about to remove so we can restore on failure.
+    var snapshotIndex = -1;
+    var snapshotRow = null;
+    if (state.roster && Array.isArray(state.roster.creators)) {
+      for (var i = 0; i < state.roster.creators.length; i++) {
+        if (state.roster.creators[i].id === id) {
+          snapshotIndex = i;
+          snapshotRow = state.roster.creators[i];
+          break;
+        }
+      }
+      if (snapshotIndex >= 0) {
+        state.roster.creators.splice(snapshotIndex, 1);
+        if (typeof state.roster.total === 'number' && state.roster.total > 0) state.roster.total -= 1;
+      }
+    }
+
+    // Close the modal + navigate away immediately. `deleting` stays true so the
+    // in-flight request can't be re-fired if the user re-opens a profile
+    // quickly, but the modal is already gone from the DOM.
     state.deleting = true;
+    state.deleteOpen = false;
+    state.deleteConfirmText = '';
     state.deleteError = null;
+    state.profile = null;
+    state.selectedId = null;
+    state.editContact = false;
+    state.editPayment = false;
+    state.contractsFull = null;
+    state.creatorPayment = null;
+    syncUrlToState();
     render();
+    showToast('Creator deleted');
+
     fetch('/creator/' + encodeURIComponent(id), {
       method: 'DELETE',
       credentials: 'same-origin',
@@ -553,7 +586,6 @@
       .then(function (r) {
         if (r.status === 401) {
           state.view = 'login';
-          state.selectedId = null;
           throw new Error('unauthorized');
         }
         return r.text().then(function (raw) {
@@ -563,31 +595,14 @@
         });
       })
       .then(function (res) {
+        state.deleting = false;
         if (!res.ok) {
           var m = res.j && res.j.message;
           var msg = Array.isArray(m) ? m.join(', ') : m || (res.raw ? String(res.raw).slice(0, 300) : 'Delete failed');
           console.error('[confirmDelete] DELETE /creator/' + id + ' → ' + res.status, res.j || res.raw);
-          throw new Error('HTTP ' + res.status + ': ' + msg);
+          throw new Error(msg);
         }
-        // Drop the row from the local roster cache so the list updates without
-        // a full reload; the next natural /roster fetch will re-confirm it.
-        if (state.roster && Array.isArray(state.roster.creators)) {
-          state.roster.creators = state.roster.creators.filter(function (c) { return c.id !== id; });
-          if (typeof state.roster.total === 'number' && state.roster.total > 0) state.roster.total -= 1;
-        }
-        state.deleting = false;
-        state.deleteOpen = false;
-        state.deleteConfirmText = '';
-        state.deleteError = null;
-        state.profile = null;
-        state.selectedId = null;
-        state.editContact = false;
-        state.editPayment = false;
-        state.contractsFull = null;
-        state.creatorPayment = null;
-        syncUrlToState();
-        render();
-        showToast('Creator deleted');
+        // Server confirmed; nothing more to do — the optimistic removal stands.
       })
       .catch(function (err) {
         state.deleting = false;
@@ -595,9 +610,19 @@
           render();
           return;
         }
-        state.deleteError = (err && err.message) || 'Delete failed';
+        // Put the row back so the roster reflects reality again.
+        if (snapshotRow && state.roster && Array.isArray(state.roster.creators)) {
+          var stillGone = !state.roster.creators.some(function (c) { return c.id === id; });
+          if (stillGone) {
+            var insertAt = Math.min(snapshotIndex >= 0 ? snapshotIndex : state.roster.creators.length,
+              state.roster.creators.length);
+            state.roster.creators.splice(insertAt, 0, snapshotRow);
+            if (typeof state.roster.total === 'number') state.roster.total += 1;
+          }
+        }
         console.error('[confirmDelete] failed:', err);
         render();
+        showToast('Delete failed — creator restored', 'err');
       });
   }
 
