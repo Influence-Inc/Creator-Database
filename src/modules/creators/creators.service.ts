@@ -8,6 +8,7 @@ import {
   normalizeEmail,
   normalizeInstagram,
   normalizeName,
+  normalizePhoneNumber,
 } from '../../common/utils/normalize';
 import { ActivityChange } from '../activity-log/activity-change.interface';
 import { ActivityLogService } from '../activity-log/activity-log.service';
@@ -561,6 +562,10 @@ export class CreatorsService {
     if (input.creatorName !== undefined) {
       out.creatorName =
         input.creatorName === null ? null : (normalizeName(input.creatorName) ?? undefined);
+    }
+    if (input.phoneNumber !== undefined) {
+      out.phoneNumber =
+        input.phoneNumber === null ? null : (normalizePhoneNumber(input.phoneNumber) ?? undefined);
     }
     if (input.currency !== undefined && input.currency !== null) {
       out.currency = normalizeCurrency(input.currency) ?? undefined;
