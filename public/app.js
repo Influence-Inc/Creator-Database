@@ -1289,7 +1289,7 @@
         ) +
         dl('Email', ct.email ? copyable(ct.email, ct.email) : '—') +
         dl('Phone', ct.phone ? copyable(ct.phone, ct.phone) : '—') +
-        group('Registered address') +
+        group('Registered address', [ct.creatorName, af.line1, af.line2, af.city, af.state, af.postalCode, af.country].filter(Boolean).join(', ')) +
         dl('Address line 1', addrPart(af.line1)) +
         dl('Address line 2', addrPart(af.line2)) +
         pair(dl('City', addrPart(af.city)), dl('State / Province', addrPart(af.state))) +
@@ -1339,9 +1339,15 @@
       );
     }
 
-    // Read view. Account holder / bank / account number always show (a blank
-    // one is worth noticing); the region-specific rails — IBAN, routing, IFSC,
-    // SWIFT — only appear when the creator actually has them on file.
+    var bankCopyLines = [
+      pay.bankName ? 'Bank: ' + pay.bankName : '',
+      pay.accountHolder ? 'Account Name: ' + pay.accountHolder : '',
+      pay.accountNumber ? 'Account Number: ' + pay.accountNumber : '',
+      pay.iban ? 'IBAN: ' + pay.iban : '',
+      pay.routingNumber ? 'Routing Number: ' + pay.routingNumber : '',
+      pay.ifscCode ? 'IFSC Code: ' + pay.ifscCode : '',
+      pay.swiftCode ? 'SWIFT Code: ' + pay.swiftCode : '',
+    ].filter(Boolean).join('\n');
     var rows =
       dl('Account holder', esc(pay.accountHolder || '—')) +
       dl('Bank name', esc(pay.bankName || '—')) +
@@ -1351,9 +1357,13 @@
       (pay.ifscCode ? dl('IFSC code', monoV(pay.ifscCode)) : '') +
       (pay.swiftCode ? dl('SWIFT / BIC', monoV(pay.swiftCode)) : '') +
       dl('Payment method', esc(pay.paymentMethod || '—'));
+    var copyBtn = bankCopyLines
+      ? '<div class="copy-block-wrap"><span class="copy-block" data-act="copy" data-copy="' + esc(bankCopyLines) + '" title="Copy bank details">⧉ Copy bank details</span></div>'
+      : '';
     return (
       '<div class="card">' +
       cardTitleBar('Payment account', false, 'edit-payment', 'save-payment', 'cancel-payment') +
+      copyBtn +
       '<div class="detail-list">' + rows + '</div></div>'
     );
   }
@@ -1367,8 +1377,11 @@
   }
   // Sub-heading inside a detail list, marking where one group of fields ends
   // and the next begins.
-  function group(label) {
-    return '<div class="detail-group">' + esc(label) + '</div>';
+  function group(label, copyText) {
+    var btn = copyText
+      ? ' <span class="copy-block" data-act="copy" data-copy="' + esc(copyText) + '" title="Copy to clipboard">⧉ Copy</span>'
+      : '';
+    return '<div class="detail-group">' + esc(label) + btn + '</div>';
   }
   // A mono value with a click-to-copy affordance — these are fields an admin
   // routinely pastes elsewhere (email, handle, phone).
