@@ -78,8 +78,8 @@ export class RosterService {
       .toUpperCase();
   }
 
-  private displayName(c: Creator): string {
-    return c.creatorName || c.instagramUsername || c.email || 'Unknown creator';
+  private displayName(c: Creator, signerName?: string | null): string {
+    return signerName || c.creatorName || c.instagramUsername || c.email || 'Unknown creator';
   }
 
   private handle(c: Creator): string {
@@ -117,6 +117,7 @@ export class RosterService {
               creatorId: true,
               status: true,
               campaignName: true,
+              signerName: true,
               signatureImage: true,
               createdAt: true,
             },
@@ -142,7 +143,7 @@ export class RosterService {
     // creators with no contract AND no performance history are "Unused".
     const contractsByCreator = new Map<
       string,
-      { active: number; signed: number; signature: boolean; lastCampaign: string | null }
+      { active: number; signed: number; signature: boolean; lastCampaign: string | null; signerName: string | null }
     >();
     for (const ct of contracts) {
       const e =
@@ -151,11 +152,13 @@ export class RosterService {
           signed: 0,
           signature: false,
           lastCampaign: null,
+          signerName: null,
         };
       if (ct.status === 'SIGNED') e.active += 1;
       if (ct.status === 'SIGNED' || ct.status === 'COMPLETED') e.signed += 1;
       if (ct.signatureImage) e.signature = true;
       if (!e.lastCampaign && ct.campaignName) e.lastCampaign = ct.campaignName; // rows are newest-first
+      if (!e.signerName && ct.signerName) e.signerName = ct.signerName;
       contractsByCreator.set(ct.creatorId, e);
     }
 
@@ -164,7 +167,7 @@ export class RosterService {
       const st = statsByCreator.get(c.id);
       const ct = contractsByCreator.get(c.id);
       const platforms = st ? order.filter((code) => st.platforms.has(code)) : [];
-      const name = this.displayName(c);
+      const name = this.displayName(c, ct?.signerName);
       const signedContracts = ct?.signed ?? 0;
       const campaignsRun = st?.count ?? 0;
       return {
@@ -215,9 +218,9 @@ export class RosterService {
 
     return {
       id: creator.id,
-      name: this.displayName(creator),
+      name: this.displayName(creator, contracts.find((c) => c.signerName)?.signerName),
       handle: this.handle(creator),
-      initials: this.initials(this.displayName(creator)),
+      initials: this.initials(this.displayName(creator, contracts.find((c) => c.signerName)?.signerName)),
       risk: this.normalizeRisk(creator.riskLevel),
       followers: creator.followers,
       views: combinedViews,
@@ -445,7 +448,7 @@ export class RosterService {
 
     return {
       creatorId: creator.id,
-      creatorName: creator.creatorName ?? creator.instagramUsername ?? null,
+      creatorName: contracts.find((c) => c.signerName)?.signerName ?? creator.creatorName ?? creator.instagramUsername ?? null,
       // Creator-level unredacted payout details — the source of truth used to
       // seed the Payment account edit form even when no contract exists yet.
       payment: (creator.paymentDetails as Record<string, unknown> | null) ?? null,
@@ -521,7 +524,7 @@ export class RosterService {
     return {
       // Identity — exposed so the dashboard can render them in the Contact &
       // identity card alongside the address, all editable together.
-      creatorName: creator.creatorName ?? null,
+      creatorName: contracts.find((c) => c.signerName)?.signerName ?? creator.creatorName ?? null,
       instagramUsername: creator.instagramUsername ?? null,
       address: addr,
       phone: creator.phoneNumber ?? contracts.find((c) => c.signerPhone)?.signerPhone ?? null,
