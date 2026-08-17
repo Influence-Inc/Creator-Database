@@ -12,9 +12,11 @@ import { UpdateDetailsDto } from './dto/update-details.dto';
  * profile screens render — so the browser makes one call per screen instead of
  * fanning out across three endpoints and doing joins client-side.
  *
- * Sensitive payout data never leaves the server intact: full account numbers,
- * IBANs and the signature image are redacted here (only a masked last-4 and an
- * "on file" flag are exposed).
+ * Payout details (account number / IBAN / tax identifiers) are returned in full
+ * on the profile — the console renders them directly rather than behind a
+ * "Reveal" step — under the same guard that already protects
+ * `GET /roster/:id/contracts`. The signature image stays out of the profile
+ * payload; it is only served by that contracts endpoint.
  */
 @Injectable()
 export class RosterService {
@@ -419,11 +421,10 @@ export class RosterService {
   }
 
   /**
-   * Full, UNREDACTED signed contracts for a creator — including the complete
-   * payout details (full account number / IBAN) and the signature image. This
-   * is the payment-processing / contract-review view, deliberately separate from
-   * profile() (which masks payout data) so the sensitive fields are only sent on
-   * an explicit admin request, still behind the same auth guard.
+   * Full signed contracts for a creator — every contract's own payout snapshot
+   * and the signature image. This is the payment-processing / contract-review
+   * view: profile() already carries the creator's current payout details, but
+   * only this endpoint returns the per-contract history and the signature.
    */
   async contractsFull(creatorId: string) {
     const creator = await this.prisma.creator.findUnique({
@@ -530,12 +531,15 @@ export class RosterService {
     };
   }
 
-  private last4(value: string | null | undefined): string | null {
-    if (!value) return null;
-    const digits = String(value).replace(/\s+/g, '');
-    return digits.length >= 4 ? digits.slice(-4) : digits;
-  }
-
+  /**
+   * Payout details for the profile screen. These are returned in full: the
+   * console shows them directly on the Payment account card (there is no
+   * "Reveal" step any more), and the tax identifiers are rendered in the
+   * Contact & identity card. This endpoint sits behind the same guard as
+   * `GET /roster/:id/contracts`, which has always returned the unredacted
+   * payout JSON, so nothing is exposed here that an authorised caller could
+   * not already read.
+   */
   private buildPayment(creator: Creator, contracts: Contract[]) {
     // Prefer the master Creator record's payout details — that's the source of
     // truth going forward. Fall back to the first contract that carries any
@@ -546,7 +550,19 @@ export class RosterService {
     const contractPd = (contractWithPay?.paymentDetails as Record<string, string> | null) ?? null;
     const pd = creatorPd ?? contractPd;
     if (!pd) {
-      return { accountHolder: null, bankLast4: null, paymentMethod: null, taxStatus: null };
+      return {
+        accountHolder: null,
+        accountHolderName: null,
+        bankName: null,
+        accountNumber: null,
+        iban: null,
+        routingNumber: null,
+        ifscCode: null,
+        swiftCode: null,
+        panNumber: null,
+        taxIdNumber: null,
+        paymentMethod: null,
+      };
     }
     let method: string | null = null;
     if (pd.routingNumber) method = 'ACH direct deposit';
@@ -555,13 +571,24 @@ export class RosterService {
     else if (pd.accountNumber) method = 'Bank transfer';
     else if (contractWithPay?.paymentTerms) method = contractWithPay.paymentTerms;
 
-    const taxStatus = pd.taxIdNumber || pd.panNumber ? 'Tax ID on file' : 'Not provided';
-
     return {
+      // Display value — falls back to the name on the signed contract when the
+      // payout JSON doesn't carry one. `accountHolderName` is the raw stored
+      // value, used to seed the edit form so an unedited save can't overwrite
+      // the stored blank with the signer's name.
       accountHolder: pd.accountHolderName ?? contractWithPay?.signerName ?? null,
-      bankLast4: this.last4(pd.accountNumber ?? pd.iban),
+      accountHolderName: pd.accountHolderName ?? null,
+      bankName: pd.bankName ?? null,
+      accountNumber: pd.accountNumber ?? null,
+      iban: pd.iban ?? null,
+      routingNumber: pd.routingNumber ?? null,
+      ifscCode: pd.ifscCode ?? null,
+      swiftCode: pd.swiftCode ?? null,
+      // Tax identifiers — rendered in the Contact & identity card, stored with
+      // the rest of the payout JSON.
+      panNumber: pd.panNumber ?? null,
+      taxIdNumber: pd.taxIdNumber ?? null,
       paymentMethod: method,
-      taxStatus,
     };
   }
 
