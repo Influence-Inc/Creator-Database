@@ -35,14 +35,12 @@
     rosterError: false,
     profile: null,
     profileLoading: false,
-    // Full (unredacted) contracts for the selected creator — fetched on demand
-    // when the admin reveals the account number or opens a signed contract.
+    // Full signed contracts for the selected creator — fetched on demand when
+    // the admin opens a signed contract from the contract history. The Payment
+    // account card doesn't need them: the profile payload already carries the
+    // creator's current payout details in full.
     contractsFull: null,
-    // Creator-level unredacted payout details, fetched alongside contractsFull.
-    // Populated even when the creator has no signed contract yet.
-    creatorPayment: null,
     contractsLoading: false,
-    revealPay: false,
     modalContractId: null,
     // Delete-creator confirmation modal. `deleteConfirmText` is the value of the
     // "type DELETE" input; the confirm button is only enabled once it matches.
@@ -327,9 +325,7 @@
     state.profile = null;
     state.profileLoading = true;
     state.contractsFull = null;
-    state.creatorPayment = null;
     state.contractsLoading = false;
-    state.revealPay = false;
     state.modalContractId = null;
     render();
     fetch('/roster/' + encodeURIComponent(id), { credentials: 'same-origin' })
@@ -372,8 +368,9 @@
     );
   }
 
-  // Fetch the full (unredacted) contracts for the selected creator, once, then
-  // run `cb`. Used by both "reveal account number" and "view signed contract".
+  // Fetch the full signed contracts for the selected creator, once, then run
+  // `cb`. Used by "view signed contract" — the per-contract payout snapshot and
+  // the signature image only come from this endpoint.
   function loadContractsFull(cb) {
     if (state.contractsFull) return cb();
     if (state.contractsLoading) return;
@@ -393,18 +390,12 @@
       })
       .then(function (data) {
         state.contractsFull = data && data.contracts ? data.contracts : [];
-        // Creator-level unredacted payout details (source of truth). Populated
-        // even when the creator has no signed contract yet — the Payment
-        // account card reveals + edits use this in preference to the payment
-        // dict on the first contract.
-        state.creatorPayment = data && data.payment ? data.payment : null;
         state.contractsLoading = false;
         cb();
       })
       .catch(function () {
         state.contractsLoading = false;
         state.contractsFull = state.view === 'login' ? null : [];
-        state.creatorPayment = null;
         render();
       });
   }
@@ -455,8 +446,7 @@
           throw new Error('HTTP ' + res.status + ': ' + msg);
         }
         state.profile = res.j;
-        state.contractsFull = null; // force a re-fetch of the unredacted view
-        state.creatorPayment = null;
+        state.contractsFull = null; // force a re-fetch of the signed contracts
         state.saving = false;
         state.saveError = null;
         onSuccess();
@@ -477,6 +467,7 @@
     if (state.saving) return;
     var ct = (state.profile && state.profile.contact) || {};
     var af = ct.addressFields || {};
+    var pay = (state.profile && state.profile.payment) || {};
 
     // Send ONLY the fields the admin actually changed. Both email and
     // instagramUsername are unique on the Creator; re-sending an UNCHANGED
@@ -519,15 +510,28 @@
       addr.country !== current(af.country);
     if (addrChanged) contact.address = addr;
 
+    // PAN + Tax ID live in this card but are stored with the payout JSON, so
+    // they ride along as a `payment` patch. Only the changed ones are sent —
+    // the backend merges keys, and '' clears one.
+    var tax = {};
+    var pan = changed('ec-pan', pay.panNumber);
+    if (pan !== undefined) tax.panNumber = pan;
+    var taxId = changed('ec-taxid', pay.taxIdNumber);
+    if (taxId !== undefined) tax.taxIdNumber = taxId;
+
     // Nothing changed — just leave edit mode, no request (and no chance of a
     // spurious unique-constraint bounce).
-    if (Object.keys(contact).length === 0) {
+    if (Object.keys(contact).length === 0 && Object.keys(tax).length === 0) {
       state.editContact = false;
       render();
       return;
     }
 
-    saveDetails({ contact: contact }, function () {
+    var body = {};
+    if (Object.keys(contact).length) body.contact = contact;
+    if (Object.keys(tax).length) body.payment = tax;
+
+    saveDetails(body, function () {
       state.editContact = false;
       showToast('Contact details saved');
     });
@@ -574,7 +578,6 @@
     state.editContact = false;
     state.editPayment = false;
     state.contractsFull = null;
-    state.creatorPayment = null;
     syncUrlToState();
     render();
     showToast('Creator deleted');
@@ -626,6 +629,9 @@
       });
   }
 
+  // Bank / payout fields only. PAN + Tax ID are edited in the Contact &
+  // identity card (see saveContact) — sending them from here as well would
+  // wipe them whenever this form is saved.
   function savePayment() {
     if (state.saving) return;
     saveDetails(
@@ -638,8 +644,6 @@
           routingNumber: fieldVal('ep-routing'),
           ifscCode: fieldVal('ep-ifsc'),
           swiftCode: fieldVal('ep-swift'),
-          panNumber: fieldVal('ep-pan'),
-          taxIdNumber: fieldVal('ep-taxid'),
         },
       },
       function () {
@@ -1000,9 +1004,6 @@
     var c = list[state.modalContractId];
     if (!c) return '';
     var addr = c.address || {};
-    var addrStr = [addr.line1, addr.line2, addr.city, addr.state, addr.postalCode, addr.country]
-      .filter(Boolean)
-      .join(', ');
     var pay = c.payment || {};
     var sig = c.signatureImage
       ? '<img class="sig-img" src="' + esc(c.signatureImage) + '" alt="signature">'
@@ -1015,12 +1016,22 @@
       return v ? '<span class="mono">' + esc(v) + '</span>' : '';
     };
 
+    // Address as its own parts, matching the Contact & identity card — a
+    // comma-joined line hid which part was actually missing. Tax identifiers
+    // sit with the identity block here too, not with the bank details.
     var signer =
       row('Signed by', esc(c.signerName)) +
       row('Email', mono(c.signerEmail)) +
       row('Phone', mono(c.signerPhone)) +
       row('Gender', esc(c.signerGender)) +
-      row('Address', esc(addrStr)) +
+      row('Address line 1', esc(addr.line1)) +
+      row('Address line 2', esc(addr.line2)) +
+      row('City', esc(addr.city)) +
+      row('State / Province', esc(addr.state)) +
+      row('Postal code', esc(addr.postalCode)) +
+      row('Country', esc(addr.country)) +
+      row('PAN', mono(pay.panNumber)) +
+      row('Tax ID', mono(pay.taxIdNumber)) +
       row('Signed date', c.signedAt ? fmtDate(c.signedAt) : c.signerSignedDate ? fmtDate(c.signerSignedDate) : '') +
       row('Status', '<span class="badge badge-sm" style="' + statusStyle(c.status) + '">' + esc(c.status) + '</span>');
 
@@ -1031,9 +1042,7 @@
       row('IBAN', mono(pay.iban)) +
       row('Routing number', mono(pay.routingNumber)) +
       row('IFSC code', mono(pay.ifscCode)) +
-      row('SWIFT / BIC', mono(pay.swiftCode)) +
-      row('PAN', mono(pay.panNumber)) +
-      row('Tax ID', mono(pay.taxIdNumber));
+      row('SWIFT / BIC', mono(pay.swiftCode));
     if (!payment) payment = '<div class="dim" style="font-size:13px">No payout details on file.</div>';
 
     var terms =
@@ -1079,7 +1088,7 @@
       '<div class="modal-body">' +
       '<div class="msec"><div class="msec-t">Signature</div><div class="sig-box">' + sig + '</div></div>' +
       '<div class="msec"><div class="msec-t">Signer &amp; identity</div>' + signer + '</div>' +
-      '<div class="msec"><div class="msec-t">Payment account (full)</div>' + payment + '</div>' +
+      '<div class="msec"><div class="msec-t">Payment account</div>' + payment + '</div>' +
       '<div class="msec"><div class="msec-t">Contract terms</div>' + (terms || '<div class="dim" style="font-size:13px">—</div>') + '</div>' +
       '</div></div></div>'
     );
@@ -1223,9 +1232,15 @@
     );
   }
 
+  // Contact & identity. The registered address is broken out into its parts
+  // (line 1 / line 2 / city / state / postal code / country) rather than one
+  // comma-joined string, so an admin can read — and spot a gap in — each part.
+  // The tax identifiers (PAN, Tax ID) live here too: they identify the person,
+  // not the bank account, even though they're stored with the payout JSON.
   function contactCard(p) {
     var ct = p.contact || {};
     var af = ct.addressFields || {};
+    var pay = p.payment || {};
     var body;
     if (state.editContact) {
       body =
@@ -1240,20 +1255,29 @@
         dl('Instagram', editInput('ec-ig', ct.instagramUsername, '@handle')) +
         dl('Email', editInput('ec-email', ct.email, 'email@example.com')) +
         dl('Phone', editInput('ec-phone', ct.phone, '+1 555 123 4567')) +
-        dl(
-          'Address',
-          editInput('ec-line1', af.line1, 'Address line 1') +
-            '<div style="height:8px"></div>' +
-            editInput('ec-line2', af.line2, 'Address line 2 (optional)') +
-            '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">' +
-            editInput('ec-city', af.city, 'City') +
-            editInput('ec-state', af.state, 'State / Province') +
-            editInput('ec-zip', af.postalCode, 'Postal code') +
-            editInput('ec-country', af.country, 'Country') +
-            '</div>'
+        group('Registered address') +
+        dl('Address line 1', editInput('ec-line1', af.line1, 'Street address')) +
+        dl('Address line 2', editInput('ec-line2', af.line2, 'Apartment, suite (optional)')) +
+        pair(
+          dl('City', editInput('ec-city', af.city, 'City')),
+          dl('State / Province', editInput('ec-state', af.state, 'State / Province')),
+        ) +
+        pair(
+          dl('Postal code', editInput('ec-zip', af.postalCode, 'Postal code')),
+          dl('Country', editInput('ec-country', af.country, 'Country')),
+        ) +
+        group('Tax identity') +
+        pair(
+          dl('PAN', editInput('ec-pan', pay.panNumber, 'PAN')),
+          dl('Tax ID', editInput('ec-taxid', pay.taxIdNumber, 'Tax ID')),
         ) +
         '</div>';
     } else {
+      // Address parts are always listed, blanks included — a stable set of rows
+      // makes a missing pincode obvious instead of invisible.
+      var addrPart = function (v) {
+        return v ? esc(v) : '<span class="dim">—</span>';
+      };
       body =
         '<div class="detail-list">' +
         dl('Name', esc(ct.creatorName || '—')) +
@@ -1265,7 +1289,16 @@
         ) +
         dl('Email', ct.email ? copyable(ct.email, ct.email) : '—') +
         dl('Phone', ct.phone ? copyable(ct.phone, ct.phone) : '—') +
-        dl('Registered address', esc(ct.address || '—')) +
+        group('Registered address') +
+        dl('Address line 1', addrPart(af.line1)) +
+        dl('Address line 2', addrPart(af.line2)) +
+        pair(dl('City', addrPart(af.city)), dl('State / Province', addrPart(af.state))) +
+        pair(dl('Postal code', addrPart(af.postalCode)), dl('Country', addrPart(af.country))) +
+        group('Tax identity') +
+        pair(
+          dl('PAN', pay.panNumber ? copyable(pay.panNumber, pay.panNumber) : '—'),
+          dl('Tax ID', pay.taxIdNumber ? copyable(pay.taxIdNumber, pay.taxIdNumber) : '—'),
+        ) +
         '</div>';
     }
     return (
@@ -1276,35 +1309,25 @@
     );
   }
 
-  // Payment account card. Masked by default; the admin can Reveal the full
-  // account/IBAN or Edit it (both fetch the full payout details on demand).
+  // Payment account card. The payout details are shown in full — the profile
+  // payload carries them unredacted, so there's no Reveal step and no extra
+  // fetch. PAN + Tax ID are not here; they're in Contact & identity.
   function paymentCard(p) {
     var pay = p.payment || {};
-    // Prefer the Creator-level unredacted payout details (source of truth,
-    // populated even without a signed contract). Fall back to the payment dict
-    // on the newest contract for rows loaded before creatorPayment existed.
-    var full = state.creatorPayment
-      ? state.creatorPayment
-      : state.contractsFull && state.contractsFull.length
-      ? state.contractsFull[0].payment || {}
-      : null;
     var monoV = function (v) {
       return '<span class="mono">' + esc(v) + '</span>';
     };
 
-    // Edit mode — inputs seeded from the full (unredacted) payout details.
+    // Edit mode — inputs seeded from the same payout details the card shows.
     if (state.editPayment) {
-      var f = full || {};
       var erows =
-        dl('Account holder', editInput('ep-holder', f.accountHolderName, 'Name on account')) +
-        dl('Bank name', editInput('ep-bank', f.bankName, 'Bank name')) +
-        dl('Account number', editInput('ep-acct', f.accountNumber, 'Account number')) +
-        dl('IBAN', editInput('ep-iban', f.iban, 'IBAN')) +
-        dl('Routing number', editInput('ep-routing', f.routingNumber, 'Routing number')) +
-        dl('IFSC code', editInput('ep-ifsc', f.ifscCode, 'IFSC code')) +
-        dl('SWIFT / BIC', editInput('ep-swift', f.swiftCode, 'SWIFT / BIC')) +
-        dl('PAN number', editInput('ep-pan', f.panNumber, 'PAN')) +
-        dl('Tax ID number', editInput('ep-taxid', f.taxIdNumber, 'Tax ID'));
+        dl('Account holder', editInput('ep-holder', pay.accountHolderName, 'Name on account')) +
+        dl('Bank name', editInput('ep-bank', pay.bankName, 'Bank name')) +
+        dl('Account number', editInput('ep-acct', pay.accountNumber, 'Account number')) +
+        dl('IBAN', editInput('ep-iban', pay.iban, 'IBAN')) +
+        dl('Routing number', editInput('ep-routing', pay.routingNumber, 'Routing number')) +
+        dl('IFSC code', editInput('ep-ifsc', pay.ifscCode, 'IFSC code')) +
+        dl('SWIFT / BIC', editInput('ep-swift', pay.swiftCode, 'SWIFT / BIC'));
       return (
         '<div class="card">' +
         cardTitleBar('Payment account', true, 'edit-payment', 'save-payment', 'cancel-payment') +
@@ -1316,46 +1339,36 @@
       );
     }
 
-    // Reveal (full) view.
-    if (state.revealPay && full) {
-      var rrows =
-        dl('Account holder', esc(full.accountHolderName || pay.accountHolder || '—')) +
-        (full.bankName ? dl('Bank name', esc(full.bankName)) : '') +
-        (full.accountNumber ? dl('Account number', monoV(full.accountNumber)) : '') +
-        (full.iban ? dl('IBAN', monoV(full.iban)) : '') +
-        (full.routingNumber ? dl('Routing number', monoV(full.routingNumber)) : '') +
-        (full.ifscCode ? dl('IFSC code', monoV(full.ifscCode)) : '') +
-        (full.swiftCode ? dl('SWIFT / BIC', monoV(full.swiftCode)) : '') +
-        (full.panNumber ? dl('PAN', monoV(full.panNumber)) : '') +
-        (full.taxIdNumber ? dl('Tax ID', monoV(full.taxIdNumber)) : '') +
-        dl('Payment method', esc(pay.paymentMethod || '—'));
-      return (
-        '<div class="card">' +
-        '<div class="card-title" style="display:flex;justify-content:space-between;align-items:center">Payment account' +
-        '<span style="display:flex;gap:14px"><button class="linklike" data-act="edit-payment">Edit</button><button class="linklike" data-act="hide-pay">Hide</button></span></div>' +
-        '<div class="detail-list">' + rrows + '</div></div>'
-      );
-    }
-
-    // Masked view.
-    var revealBtn = pay.bankLast4
-      ? ' <button class="linklike" data-act="reveal-pay">' +
-        (state.contractsLoading && !state.editPayment ? 'Revealing…' : 'Reveal') +
-        '</button>'
-      : '';
+    // Read view. Account holder / bank / account number always show (a blank
+    // one is worth noticing); the region-specific rails — IBAN, routing, IFSC,
+    // SWIFT — only appear when the creator actually has them on file.
+    var rows =
+      dl('Account holder', esc(pay.accountHolder || '—')) +
+      dl('Bank name', esc(pay.bankName || '—')) +
+      dl('Account number', pay.accountNumber ? copyable(pay.accountNumber, pay.accountNumber) : '—') +
+      (pay.iban ? dl('IBAN', copyable(pay.iban, pay.iban)) : '') +
+      (pay.routingNumber ? dl('Routing number', monoV(pay.routingNumber)) : '') +
+      (pay.ifscCode ? dl('IFSC code', monoV(pay.ifscCode)) : '') +
+      (pay.swiftCode ? dl('SWIFT / BIC', monoV(pay.swiftCode)) : '') +
+      dl('Payment method', esc(pay.paymentMethod || '—'));
     return (
       '<div class="card">' +
-      '<div class="card-title" style="display:flex;justify-content:space-between;align-items:center">Payment account<button class="linklike" data-act="edit-payment">Edit</button></div>' +
-      '<div class="detail-list">' +
-      dl('Account holder', esc(pay.accountHolder || '—')) +
-      dl('Bank account', '<span class="mono">' + (pay.bankLast4 ? '•••• •••• ' + esc(pay.bankLast4) : '—') + '</span>' + revealBtn) +
-      dl('Payment method', esc(pay.paymentMethod || '—')) +
-      dl('Tax status', esc(pay.taxStatus || '—')) +
-      '</div></div>'
+      cardTitleBar('Payment account', false, 'edit-payment', 'save-payment', 'cancel-payment') +
+      '<div class="detail-list">' + rows + '</div></div>'
     );
   }
   function dl(k, v) {
     return '<div><div class="k">' + esc(k) + '</div><div class="v">' + v + '</div></div>';
+  }
+  // Two dl() rows side by side — keeps a long detail list (the split-out
+  // address, the tax identifiers) compact instead of one row per part.
+  function pair(a, b) {
+    return '<div class="detail-pair">' + a + b + '</div>';
+  }
+  // Sub-heading inside a detail list, marking where one group of fields ends
+  // and the next begins.
+  function group(label) {
+    return '<div class="detail-group">' + esc(label) + '</div>';
   }
   // A mono value with a click-to-copy affordance — these are fields an admin
   // routinely pastes elsewhere (email, handle, phone).
@@ -1727,12 +1740,6 @@
       }
       return;
     }
-    if (act === 'reveal-pay') {
-      return loadContractsFull(function () {
-        setState({ revealPay: true });
-      });
-    }
-    if (act === 'hide-pay') return setState({ revealPay: false });
     if (act === 'view-contract') {
       var idx = parseInt(el.getAttribute('data-idx'), 10) || 0;
       return loadContractsFull(function () {
@@ -1756,12 +1763,9 @@
     if (act === 'edit-contact') return setState({ editContact: true, saveError: null });
     if (act === 'cancel-contact') return setState({ editContact: false, saveError: null });
     if (act === 'save-contact') return saveContact();
-    if (act === 'edit-payment') {
-      // Needs the full payout details to seed the form.
-      return loadContractsFull(function () {
-        setState({ editPayment: true, revealPay: false, saveError: null });
-      });
-    }
+    // The profile payload already carries the full payout details, so the form
+    // opens straight away — no fetch to wait on.
+    if (act === 'edit-payment') return setState({ editPayment: true, saveError: null });
     if (act === 'cancel-payment') return setState({ editPayment: false, saveError: null });
     if (act === 'save-payment') return savePayment();
     // ---- delete creator (type-to-confirm) ----

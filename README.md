@@ -18,9 +18,11 @@ It ships with a lightweight **admin console** (a static SPA served from
 creator roster, and a per-creator profile (overview, contract & legal,
 deliverables & rights, performance, campaigns), in light and dark themes. The
 UI reads from a purpose-built `/roster` read-model that composes the master
-record with its stats snapshots and contracts; sensitive payout data (full
-account numbers, IBANs, signature images) is redacted server-side and never
-sent to the browser. From the **Contract & Legal** tab, any past signed
+record with its stats snapshots and contracts. Payout details (account number /
+IBAN) and tax identifiers (PAN, Tax ID) are shown on the profile as-is — the
+whole read API is closed behind the admin session or `x-api-key` (see **Auth**
+below); signature images stay out of the profile payload and are only served by
+`GET /roster/:id/contracts`. From the **Contract & Legal** tab, any past signed
 contract can be **viewed or downloaded as a compliant, print-ready legal
 agreement** (a "Creator Content Agreement") — parties, deliverables, usage
 rights, exclusivity, compensation terms, the signer's identity + address and
