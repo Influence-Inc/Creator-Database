@@ -26,6 +26,23 @@
     sortDir: 'desc',
     selectedId: null,
     activeTab: 'contract',
+    // Which top-level page is showing: the creator roster or the scouts area.
+    page: 'roster', // 'roster' | 'scouts'
+    // --- Scouts section ---
+    scoutEntries: null, // array | null (loading)
+    scoutEntriesError: '',
+    scoutUsers: null,
+    scoutSummary: null,
+    scoutFilterScout: '',
+    scoutFilterQual: '',
+    scoutSearch: '',
+    scoutBusyId: null,
+    scoutAccountsOpen: false,
+    newScoutName: '',
+    newScoutUser: '',
+    newScoutPass: '',
+    scoutAccountError: '',
+    scoutCreating: false,
     // Inline edit state for the Contact & Payment cards.
     editContact: false,
     editPayment: false,
@@ -73,17 +90,21 @@
   // without needing an SPA fallback on the API server.
   function parseHash() {
     var h = String(window.location.hash || '').replace(/^#/, '');
-    if (!h || h === '/') return { selectedId: null, activeTab: DEFAULT_TAB };
-    var parts = h.split('/').filter(Boolean); // ['c', ':id', ':tab?']
+    if (!h || h === '/') return { selectedId: null, activeTab: DEFAULT_TAB, page: 'roster' };
+    var parts = h.split('/').filter(Boolean); // ['c', ':id', ':tab?'] | ['scouts']
+    if (parts[0] === 'scouts') {
+      return { selectedId: null, activeTab: DEFAULT_TAB, page: 'scouts' };
+    }
     if (parts[0] === 'c' && parts[1]) {
       // An unknown tab (e.g. a stale '/performance' link) falls back to the
       // default rather than rendering nothing.
       var tab = parts[2] && TAB_KEYS.indexOf(parts[2]) >= 0 ? parts[2] : DEFAULT_TAB;
-      return { selectedId: decodeURIComponent(parts[1]), activeTab: tab };
+      return { selectedId: decodeURIComponent(parts[1]), activeTab: tab, page: 'roster' };
     }
-    return { selectedId: null, activeTab: DEFAULT_TAB };
+    return { selectedId: null, activeTab: DEFAULT_TAB, page: 'roster' };
   }
-  function hashFor(sel, tab) {
+  function hashFor(sel, tab, page) {
+    if (page === 'scouts') return '#/scouts';
     if (!sel) return '#/';
     var t = tab && tab !== DEFAULT_TAB ? '/' + tab : '';
     return '#/c/' + encodeURIComponent(sel) + t;
@@ -93,7 +114,7 @@
   var suppressHashSync = false;
   function syncUrlToState() {
     if (state.view !== 'app') return;
-    var next = hashFor(state.selectedId, state.activeTab);
+    var next = hashFor(state.selectedId, state.activeTab, state.page);
     if (next === (window.location.hash || '#/')) return;
     suppressHashSync = true;
     // pushState avoids reloading; the '#' change also updates history normally.
@@ -104,10 +125,19 @@
   function applyHashToState() {
     if (state.view !== 'app') return;
     var r = parseHash();
-    var changed = r.selectedId !== state.selectedId || r.activeTab !== state.activeTab;
+    var changed =
+      r.selectedId !== state.selectedId ||
+      r.activeTab !== state.activeTab ||
+      r.page !== state.page;
     if (!changed) return;
+    var enteringScouts = r.page === 'scouts' && state.page !== 'scouts';
     state.selectedId = r.selectedId;
     state.activeTab = r.activeTab;
+    state.page = r.page;
+    if (enteringScouts) {
+      loadScouts();
+      return;
+    }
     state.editContact = false;
     state.editPayment = false;
     state.saveError = null;
@@ -709,7 +739,21 @@
         '<span class="crumb crumb-now">' +
         esc((state.profile && state.profile.name) || 'Creator') +
         '</span>'
-      : '<span class="crumb">Creator Database</span>';
+      : state.page === 'scouts'
+        ? '<button class="crumb crumb-link" data-act="back">Creator Database</button>' +
+          '<span class="crumb-sep">/</span>' +
+          '<span class="crumb crumb-now">Scouts</span>'
+        : '<span class="crumb">Creator Database</span>';
+
+    // Top-level section switch. Kept next to the breadcrumb so the two reading
+    // orders (where am I / where else can I go) sit together.
+    var nav =
+      '<div class="topnav">' +
+      '<button class="topnav-btn' + (state.page === 'roster' ? ' on' : '') +
+      '" data-act="go-roster">Creators</button>' +
+      '<button class="topnav-btn' + (state.page === 'scouts' ? ' on' : '') +
+      '" data-act="go-scouts">Scouts</button>' +
+      '</div>';
     return (
       '<div class="topbar">' +
       '<div class="left">' +
@@ -720,6 +764,7 @@
       '<div class="crumbs">' +
       crumb +
       '</div>' +
+      nav +
       '</div>' +
       '<div class="right">' +
       // Only shown where there's no search box on the page. On the roster the
@@ -1663,11 +1708,409 @@
   }
 
   // ---- render + events ----------------------------------------------------
+
+  // ---- Scouts (admin) -----------------------------------------------------
+  // Admins review what manual scouters have found: the qualification tick/cross
+  // and the notes field are owned here (scouts see them read-only on their own
+  // sheet), and a qualified row can be promoted into the Creator Database.
+
+  function scoutApi(path, options) {
+    var opts = options || {};
+    return fetch(path, {
+      method: opts.method || 'GET',
+      credentials: 'same-origin',
+      headers: opts.body ? { 'Content-Type': 'application/json' } : undefined,
+      body: opts.body ? JSON.stringify(opts.body) : undefined
+    }).then(function (res) {
+      if (res.status === 401) {
+        state.view = 'login';
+        render();
+        throw new Error('unauthorized');
+      }
+      return res.json().catch(function () { return {}; }).then(function (data) {
+        if (!res.ok) {
+          var m = data && data.message;
+          throw new Error(Array.isArray(m) ? m.join(', ') : m || ('Request failed (' + res.status + ')'));
+        }
+        return data;
+      });
+    });
+  }
+
+  function scoutQuery() {
+    var q = [];
+    if (state.scoutFilterScout) q.push('scoutId=' + encodeURIComponent(state.scoutFilterScout));
+    if (state.scoutFilterQual) q.push('qualification=' + encodeURIComponent(state.scoutFilterQual));
+    if (state.scoutSearch.trim()) q.push('search=' + encodeURIComponent(state.scoutSearch.trim()));
+    return q.length ? '?' + q.join('&') : '';
+  }
+
+  function loadScouts() {
+    state.scoutEntries = null;
+    state.scoutEntriesError = '';
+    render();
+    scoutApi('/scouts/entries' + scoutQuery())
+      .then(function (rows) {
+        state.scoutEntries = Array.isArray(rows) ? rows : [];
+        render();
+      })
+      .catch(function (err) {
+        if (err.message === 'unauthorized') return;
+        state.scoutEntries = [];
+        state.scoutEntriesError = err.message;
+        render();
+      });
+    scoutApi('/scouts/summary')
+      .then(function (sum) { state.scoutSummary = sum; render(); })
+      .catch(function () {});
+    if (state.scoutUsers === null) loadScoutUsers();
+  }
+
+  function loadScoutUsers() {
+    scoutApi('/users?role=SCOUT')
+      .then(function (users) {
+        state.scoutUsers = Array.isArray(users) ? users : [];
+        render();
+      })
+      .catch(function () {
+        state.scoutUsers = [];
+        render();
+      });
+  }
+
+  function scoutSummaryChips() {
+    var sum = state.scoutSummary;
+    if (!sum) return '';
+    return (
+      '<span class="scout-stat"><b>' + esc(sum.total || 0) + '</b> total</span>' +
+      '<span class="scout-stat"><b>' + esc(sum.PENDING || 0) + '</b> to review</span>' +
+      '<span class="scout-stat"><b>' + esc(sum.QUALIFIED || 0) + '</b> qualified</span>' +
+      '<span class="scout-stat"><b>' + esc(sum.REJECTED || 0) + '</b> rejected</span>'
+    );
+  }
+
+  function scoutOptions() {
+    var opts = '<option value="">All scouts</option>';
+    (state.scoutUsers || []).forEach(function (u) {
+      opts +=
+        '<option value="' + esc(u.id) + '"' +
+        (state.scoutFilterScout === u.id ? ' selected' : '') + '>' +
+        esc(u.displayName || u.username) + ' (' + esc(u.entryCount || 0) + ')' +
+        '</option>';
+    });
+    return opts;
+  }
+
+  function qualOptions() {
+    return ['', 'PENDING', 'QUALIFIED', 'REJECTED']
+      .map(function (v) {
+        var label = v === '' ? 'Any status' : v.charAt(0) + v.slice(1).toLowerCase();
+        return '<option value="' + v + '"' + (state.scoutFilterQual === v ? ' selected' : '') +
+          '>' + esc(label) + '</option>';
+      })
+      .join('');
+  }
+
+  function scoutEntryRow(e) {
+    var busy = state.scoutBusyId === e.id;
+    var who = e.scout ? e.scout.displayName || e.scout.username : '—';
+    var handle = e.instagramUsername
+      ? '<a class="sheet-handle" href="https://instagram.com/' + esc(e.instagramUsername) +
+        '" target="_blank" rel="noopener noreferrer">@' + esc(e.instagramUsername) + '</a>'
+      : '<span class="sheet-handle sheet-handle-warn">no handle</span>';
+
+    var promote = e.promotedCreatorId
+      ? '<span class="promoted-tag">In Creator DB</span>'
+      : e.qualification === 'QUALIFIED'
+        ? '<button class="btn-accent" data-act="scout-promote" data-id="' + esc(e.id) + '"' +
+          (busy ? ' disabled' : '') + '>' + (busy ? '…' : 'Promote') + '</button>'
+        : '<span class="sheet-muted">—</span>';
+
+    return (
+      '<tr>' +
+      '<td class="sheet-num">' + esc(e.rowNumber) + '</td>' +
+      '<td>' + esc(who) + '</td>' +
+      '<td><div class="scout-link">' + esc(e.instagramProfileLink || '—') + '</div>' + handle + '</td>' +
+      '<td><div class="sheet-notes">' + (e.reelIdeas ? esc(e.reelIdeas) : '<span class="sheet-muted">—</span>') + '</div></td>' +
+      '<td class="sheet-center">' + (e.approxAge === null || e.approxAge === undefined ? '—' : esc(e.approxAge)) + '</td>' +
+      '<td>' + (e.gender ? esc(e.gender.charAt(0) + e.gender.slice(1).toLowerCase()) : '—') + '</td>' +
+      '<td>' + esc(e.country || '—') + '</td>' +
+      '<td>' + esc(e.language || '—') + '</td>' +
+      '<td class="sheet-center">' +
+        '<button class="qual-btn' + (e.qualification === 'QUALIFIED' ? ' on-yes' : '') +
+        '" data-act="scout-qual" data-id="' + esc(e.id) + '" data-val="QUALIFIED" title="Qualified">✓</button>' +
+        '<button class="qual-btn' + (e.qualification === 'REJECTED' ? ' on-no' : '') +
+        '" data-act="scout-qual" data-id="' + esc(e.id) + '" data-val="REJECTED" title="Not a fit">✗</button>' +
+      '</td>' +
+      '<td><textarea class="notes-input" rows="2" data-act="scout-notes" data-id="' + esc(e.id) +
+        '" placeholder="Notes for this creator…">' + esc(e.notes || '') + '</textarea></td>' +
+      '<td class="sheet-center">' + promote + '</td>' +
+      '</tr>'
+    );
+  }
+
+  function scoutAccountsPanel() {
+    if (!state.scoutAccountsOpen) return '';
+    var rows = (state.scoutUsers || []).map(function (u) {
+      return (
+        '<tr>' +
+        '<td>' + esc(u.displayName || '—') + '</td>' +
+        '<td class="mono">' + esc(u.username) + '</td>' +
+        '<td class="sheet-center">' + esc(u.entryCount || 0) + '</td>' +
+        '<td class="sheet-center">' +
+          (u.isActive ? '<span class="promoted-tag">Active</span>' : '<span class="sheet-muted">Disabled</span>') +
+        '</td>' +
+        '<td class="sheet-center">' +
+          '<button class="link-btn" data-act="scout-toggle" data-id="' + esc(u.id) +
+          '" data-val="' + (u.isActive ? 'false' : 'true') + '">' +
+          (u.isActive ? 'Disable' : 'Enable') + '</button>' +
+          '<button class="link-btn" data-act="scout-pw" data-id="' + esc(u.id) + '">Reset password</button>' +
+          '<button class="link-btn danger-copy" data-act="scout-del-user" data-id="' + esc(u.id) +
+          '" data-name="' + esc(u.username) + '">Delete</button>' +
+        '</td>' +
+        '</tr>'
+      );
+    }).join('');
+
+    return (
+      '<div class="card-lg scout-accounts">' +
+      '<div class="card-title">Scouter accounts</div>' +
+      '<form class="scout-newform" data-act="scout-create">' +
+      '<input class="scout-search" name="displayName" placeholder="Full name" value="' + esc(state.newScoutName) + '">' +
+      '<input class="scout-search" name="username" placeholder="username" value="' + esc(state.newScoutUser) + '" autocomplete="off">' +
+      '<input class="scout-search" name="password" type="text" placeholder="password (min 8 chars)" value="' + esc(state.newScoutPass) + '" autocomplete="new-password">' +
+      '<button class="btn-primary" type="submit"' + (state.scoutCreating ? ' disabled' : '') + '>' +
+      (state.scoutCreating ? 'Creating…' : 'Add scouter') + '</button>' +
+      '</form>' +
+      (state.scoutAccountError ? '<div class="login-err">' + esc(state.scoutAccountError) + '</div>' : '') +
+      '<div class="scout-hint">Scouters sign in at <span class="mono">/scout</span> and only ever see their own sheet.</div>' +
+      (rows
+        ? '<div class="sheet-wrap"><table class="sheet"><thead><tr><th>Name</th><th>Username</th>' +
+          '<th class="sheet-center">Rows</th><th class="sheet-center">Status</th><th class="sheet-center">Actions</th>' +
+          '</tr></thead><tbody>' + rows + '</tbody></table></div>'
+        : '<div class="empty-s">No scouter accounts yet.</div>') +
+      '</div>'
+    );
+  }
+
+  function scoutsView() {
+    var head =
+      '<div class="page-head">' +
+      '<div><div class="page-title">Scouts</div><div class="page-sub">' +
+      (state.scoutEntries === null
+        ? 'Loading…'
+        : esc(state.scoutEntries.length + ' row' + (state.scoutEntries.length === 1 ? '' : 's'))) +
+      ' · qualification and notes are set here</div></div>' +
+      '<div class="toolbar">' + scoutSummaryChips() +
+      '<button class="link-btn" data-act="scout-accounts">' +
+      (state.scoutAccountsOpen ? 'Hide accounts' : 'Manage scouters') + '</button>' +
+      '</div></div>';
+
+    var toolbar =
+      '<div class="scout-toolbar">' +
+      '<select class="scout-select" data-act="scout-filter-scout">' + scoutOptions() + '</select>' +
+      '<select class="scout-select" data-act="scout-filter-qual">' + qualOptions() + '</select>' +
+      '<input class="scout-search" data-act="scout-search" placeholder="Search handle, country, language…" value="' +
+      esc(state.scoutSearch) + '">' +
+      '</div>';
+
+    var body;
+    if (state.scoutEntriesError) {
+      body = '<div class="empty"><div class="empty-t">Could not load scouting rows</div>' +
+        '<div class="empty-s">' + esc(state.scoutEntriesError) + '</div></div>';
+    } else if (state.scoutEntries === null) {
+      body = '<div class="spinner"></div>';
+    } else if (!state.scoutEntries.length) {
+      body = '<div class="empty"><div class="empty-t">Nothing scouted yet</div>' +
+        '<div class="empty-s">Rows appear here as soon as your scouters add them.</div></div>';
+    } else {
+      body =
+        '<div class="sheet-wrap"><table class="sheet"><thead><tr>' +
+        '<th class="sheet-num">#</th><th>Scout</th><th>Instagram profile</th><th>Reels to replicate</th>' +
+        '<th class="sheet-center">Age</th><th>Gender</th><th>Location</th><th>Language</th>' +
+        '<th class="sheet-center">Qualified</th><th>Notes</th><th class="sheet-center">Creator DB</th>' +
+        '</tr></thead><tbody>' + state.scoutEntries.map(scoutEntryRow).join('') + '</tbody></table></div>';
+    }
+
+    return (
+      // No `fade` here on purpose: this view re-renders on every qualification
+      // click and notes save, and restarting the entrance animation each time
+      // makes the whole table flash.
+      '<div class="app">' + topbar() +
+      '<div class="page list">' + head + scoutAccountsPanel() + toolbar + body + '</div></div>'
+    );
+  }
+
+  // ---- Scouts event handling ---------------------------------------------
+
+  function refreshScoutRow(updated) {
+    state.scoutEntries = (state.scoutEntries || []).map(function (r) {
+      return r.id === updated.id ? updated : r;
+    });
+    render();
+  }
+
+  document.addEventListener('click', function (e) {
+    var goRoster = e.target.closest('[data-act="go-roster"]');
+    if (goRoster) {
+      setState({ page: 'roster', selectedId: null });
+      return;
+    }
+    var goScouts = e.target.closest('[data-act="go-scouts"]');
+    if (goScouts) {
+      state.page = 'scouts';
+      state.selectedId = null;
+      syncUrlToState();
+      loadScouts();
+      return;
+    }
+
+    var acct = e.target.closest('[data-act="scout-accounts"]');
+    if (acct) {
+      state.scoutAccountsOpen = !state.scoutAccountsOpen;
+      state.scoutAccountError = '';
+      render();
+      if (state.scoutAccountsOpen) loadScoutUsers();
+      return;
+    }
+
+    var qual = e.target.closest('[data-act="scout-qual"]');
+    if (qual) {
+      var qid = qual.getAttribute('data-id');
+      var want = qual.getAttribute('data-val');
+      var row = (state.scoutEntries || []).filter(function (r) { return r.id === qid; })[0];
+      // Clicking the active verdict clears it back to pending.
+      var next = row && row.qualification === want ? 'PENDING' : want;
+      scoutApi('/scouts/entries/' + encodeURIComponent(qid) + '/review', {
+        method: 'PATCH',
+        body: { qualification: next }
+      })
+        .then(function (updated) {
+          refreshScoutRow(updated);
+          scoutApi('/scouts/summary').then(function (sum) { state.scoutSummary = sum; render(); }).catch(function () {});
+        })
+        .catch(function (err) { if (err.message !== 'unauthorized') window.alert(err.message); });
+      return;
+    }
+
+    var promote = e.target.closest('[data-act="scout-promote"]');
+    if (promote) {
+      var pid = promote.getAttribute('data-id');
+      state.scoutBusyId = pid;
+      render();
+      scoutApi('/scouts/entries/' + encodeURIComponent(pid) + '/promote', { method: 'POST' })
+        .then(function (res) {
+          state.scoutBusyId = null;
+          refreshScoutRow(res.entry);
+        })
+        .catch(function (err) {
+          state.scoutBusyId = null;
+          render();
+          if (err.message !== 'unauthorized') window.alert(err.message);
+        });
+      return;
+    }
+
+    var toggle = e.target.closest('[data-act="scout-toggle"]');
+    if (toggle) {
+      scoutApi('/users/' + encodeURIComponent(toggle.getAttribute('data-id')), {
+        method: 'PATCH',
+        body: { isActive: toggle.getAttribute('data-val') === 'true' }
+      }).then(loadScoutUsers).catch(function (err) {
+        if (err.message !== 'unauthorized') window.alert(err.message);
+      });
+      return;
+    }
+
+    var pw = e.target.closest('[data-act="scout-pw"]');
+    if (pw) {
+      var np = window.prompt('New password for this scouter (min 8 characters):');
+      if (!np) return;
+      scoutApi('/users/' + encodeURIComponent(pw.getAttribute('data-id')), {
+        method: 'PATCH',
+        body: { password: np }
+      })
+        .then(function () { window.alert('Password updated.'); })
+        .catch(function (err) { if (err.message !== 'unauthorized') window.alert(err.message); });
+      return;
+    }
+
+    var delUser = e.target.closest('[data-act="scout-del-user"]');
+    if (delUser) {
+      var name = delUser.getAttribute('data-name');
+      if (!window.confirm('Delete "' + name + '"? Their scouting rows are deleted too. This cannot be undone.')) return;
+      scoutApi('/users/' + encodeURIComponent(delUser.getAttribute('data-id')), { method: 'DELETE' })
+        .then(function () { loadScoutUsers(); loadScouts(); })
+        .catch(function (err) { if (err.message !== 'unauthorized') window.alert(err.message); });
+    }
+  });
+
+  document.addEventListener('change', function (e) {
+    var fs = e.target.closest('[data-act="scout-filter-scout"]');
+    if (fs) { state.scoutFilterScout = fs.value; loadScouts(); return; }
+    var fq = e.target.closest('[data-act="scout-filter-qual"]');
+    if (fq) { state.scoutFilterQual = fq.value; loadScouts(); return; }
+    var srch = e.target.closest('[data-act="scout-search"]');
+    if (srch) { state.scoutSearch = srch.value; loadScouts(); return; }
+
+    var notes = e.target.closest('[data-act="scout-notes"]');
+    if (notes) {
+      var nid = notes.getAttribute('data-id');
+      notes.classList.add('saving');
+      scoutApi('/scouts/entries/' + encodeURIComponent(nid) + '/review', {
+        method: 'PATCH',
+        body: { notes: notes.value }
+      })
+        .then(function (updated) {
+          notes.classList.remove('saving');
+          // Patch state without a re-render so the textarea keeps its caret.
+          state.scoutEntries = (state.scoutEntries || []).map(function (r) {
+            return r.id === nid ? updated : r;
+          });
+        })
+        .catch(function (err) {
+          notes.classList.remove('saving');
+          if (err.message !== 'unauthorized') window.alert(err.message);
+        });
+    }
+  });
+
+  document.addEventListener('submit', function (e) {
+    var form = e.target.closest('[data-act="scout-create"]');
+    if (!form) return;
+    e.preventDefault();
+    if (state.scoutCreating) return;
+    var body = {
+      displayName: form.displayName.value.trim(),
+      username: form.username.value.trim().toLowerCase(),
+      password: form.password.value
+    };
+    if (!body.displayName) delete body.displayName;
+    state.scoutCreating = true;
+    state.scoutAccountError = '';
+    render();
+    scoutApi('/users', { method: 'POST', body: body })
+      .then(function () {
+        state.scoutCreating = false;
+        state.newScoutName = '';
+        state.newScoutUser = '';
+        state.newScoutPass = '';
+        loadScoutUsers();
+      })
+      .catch(function (err) {
+        state.scoutCreating = false;
+        if (err.message !== 'unauthorized') state.scoutAccountError = err.message;
+        render();
+      });
+  });
+
   function render() {
     if (state.view === 'loading') {
       root.innerHTML = '<div class="spinner"></div>';
     } else if (state.view === 'login') {
       root.innerHTML = loginView();
+    } else if (state.page === 'scouts') {
+      root.innerHTML = scoutsView() + toastView();
     } else if (state.selectedId) {
       root.innerHTML = profileView() + cmdkView() + toastView();
     } else {
@@ -1910,7 +2353,9 @@
           var route = parseHash();
           state.selectedId = route.selectedId;
           state.activeTab = route.activeTab;
+          state.page = route.page;
           loadRoster();
+          if (route.page === 'scouts') loadScouts();
           if (route.selectedId) loadProfile(route.selectedId);
         } else {
           setState({ loginError: true, loggingIn: false });
@@ -1986,7 +2431,9 @@
           var route = parseHash();
           state.selectedId = route.selectedId;
           state.activeTab = route.activeTab;
+          state.page = route.page;
           loadRoster();
+          if (route.page === 'scouts') loadScouts();
           if (route.selectedId) loadProfile(route.selectedId);
           else render();
         } else {

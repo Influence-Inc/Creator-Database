@@ -1,8 +1,18 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { UserRole } from '@prisma/client';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 export const SESSION_COOKIE = 'cdb_session';
+
+/** Who a verified session belongs to. */
+export interface AuthPrincipal {
+  /** Username the session was issued to. */
+  username: string;
+  /** `User.id` for DB-backed accounts; null for the env bootstrap admin. */
+  uid: string | null;
+  role: UserRole;
+}
 
 /**
  * Minimal, dependency-free session auth for the admin console.
@@ -86,9 +96,18 @@ export class AuthService implements OnModuleInit {
     return createHmac('sha256', this.secret).update(data).digest('base64url');
   }
 
-  /** Issue a signed session token for the admin subject. */
-  issueToken(subject = 'admin'): string {
-    const payload = { sub: subject, exp: Date.now() + this.ttlMs() };
+  /**
+   * Issue a signed session token. `principal` is omitted for the env bootstrap
+   * admin (which has no User row) and supplied for DB-backed accounts so the
+   * role travels in the cookie and guards don't need a query per request.
+   */
+  issueToken(subject = 'admin', principal?: { uid?: string | null; role?: UserRole }): string {
+    const payload: Record<string, unknown> = {
+      sub: subject,
+      exp: Date.now() + this.ttlMs(),
+      role: principal?.role ?? UserRole.ADMIN,
+    };
+    if (principal?.uid) payload.uid = principal.uid;
     const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
     return `${body}.${this.sign(body)}`;
   }
@@ -127,6 +146,36 @@ export class AuthService implements OnModuleInit {
       const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
       if (!payload || typeof payload.exp !== 'number' || payload.exp < Date.now()) return null;
       return typeof payload.sub === 'string' ? payload.sub : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Verify a session token and return the full principal (subject, user id,
+   * role) rather than just the subject.
+   *
+   * Tokens minted before roles existed carry no `role` claim; those are always
+   * the env admin, so they resolve to ADMIN. That keeps every already-issued
+   * admin cookie working across this deploy instead of forcing a re-login.
+   */
+  verifySession(token: string | undefined | null): AuthPrincipal | null {
+    if (!token || typeof token !== 'string') return null;
+    const dot = token.lastIndexOf('.');
+    if (dot <= 0) return null;
+    const body = token.slice(0, dot);
+    const sig = token.slice(dot + 1);
+    if (!this.safeEqual(sig, this.sign(body))) return null;
+    try {
+      const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+      if (!payload || typeof payload.exp !== 'number' || payload.exp < Date.now()) return null;
+      if (typeof payload.sub !== 'string') return null;
+      const role = payload.role === UserRole.SCOUT ? UserRole.SCOUT : UserRole.ADMIN;
+      return {
+        username: payload.sub,
+        uid: typeof payload.uid === 'string' ? payload.uid : null,
+        role,
+      };
     } catch {
       return null;
     }

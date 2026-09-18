@@ -39,7 +39,12 @@ async function bootstrap(): Promise<void> {
   // at their own paths (/creators, /roster, /contracts, …); express.static only
   // responds when a file actually matches, so it never shadows an API route.
   // `index.html` is served for `/`.
-  app.useStaticAssets(join(__dirname, '..', 'public'), { index: ['index.html'] });
+  // `extensions: ['html']` lets /scout resolve to public/scout.html, so the
+  // scouting sheet has a clean URL alongside the admin console at /.
+  app.useStaticAssets(join(__dirname, '..', 'public'), {
+    index: ['index.html'],
+    extensions: ['html'],
+  });
 
   const config = app.get(ConfigService);
 

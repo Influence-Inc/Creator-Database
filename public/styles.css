@@ -1478,3 +1478,400 @@ input:focus-visible,
   gap: 16px;
   margin-top: 6px;
 }
+
+/* ==========================================================================
+   Scouting sheet (public/scout.html) + the admin Scouts section.
+   Reuses the tokens above so both themes come for free.
+   ========================================================================== */
+
+/* The scouting sheet manages its own page padding (.app is a bare flex column
+   used by the admin console, which pads via its own inner sections). */
+.sheet-page {
+  padding: 28px;
+  max-width: 1600px;
+  margin: 0 auto;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+@media (max-width: 720px) {
+  .sheet-page {
+    padding: 16px;
+  }
+}
+
+.sheet-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+}
+
+.page-title {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 0 0 2px;
+}
+
+.sheet-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+table.sheet {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  min-width: 1000px;
+}
+
+table.sheet th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+  padding: 10px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-alt);
+  white-space: nowrap;
+}
+
+table.sheet td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+table.sheet tr:last-child td {
+  border-bottom: none;
+}
+
+.sheet-num {
+  width: 44px;
+  text-align: center;
+  color: var(--text-faint);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+}
+
+.sheet-age {
+  width: 72px;
+}
+
+.sheet-center {
+  text-align: center;
+}
+
+.sheet-input {
+  width: 100%;
+  min-width: 90px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.sheet-input:hover {
+  border-color: var(--border);
+}
+
+.sheet-input:focus {
+  outline: none;
+  border-color: var(--text-muted);
+  background: var(--surface-alt);
+}
+
+.sheet-input.saving {
+  opacity: 0.55;
+}
+
+/* Read-only (admin-owned) columns read as inert, not just disabled. */
+.sheet-ro {
+  background: var(--surface-alt);
+  color: var(--text-muted);
+}
+
+.sheet-notes {
+  display: block;
+  max-width: 260px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.sheet-muted {
+  color: var(--text-faint);
+}
+
+.sheet-handle {
+  display: block;
+  padding: 0 9px;
+  font-size: 11px;
+  color: var(--text-faint);
+  text-decoration: none;
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+.sheet-handle:hover {
+  text-decoration: underline;
+}
+
+.sheet-handle-warn {
+  color: var(--risk-high-fg);
+}
+
+.qual {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.qual-yes {
+  background: var(--risk-low-bg);
+  color: var(--risk-low-fg);
+}
+
+.qual-no {
+  background: var(--risk-high-bg);
+  color: var(--risk-high-fg);
+}
+
+.qual-pending {
+  background: var(--st-pending-bg);
+  color: var(--st-pending-fg);
+}
+
+.row-del {
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 4px 7px;
+  border-radius: 6px;
+  line-height: 1;
+}
+
+.row-del:hover {
+  background: var(--risk-high-bg);
+  color: var(--risk-high-fg);
+}
+
+.topbar-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding-left: 14px;
+  margin-left: 14px;
+  border-left: 1px solid var(--border);
+}
+
+.topbar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.who {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+
+.link-btn:hover {
+  color: var(--text);
+  background: var(--surface-alt);
+}
+
+.toast-warn {
+  border-color: var(--risk-med-fg);
+}
+
+.toast-err {
+  border-color: var(--risk-high-fg);
+}
+
+/* --- admin Scouts section ------------------------------------------------ */
+
+.scout-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.scout-select,
+.scout-search {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.scout-search {
+  min-width: 200px;
+}
+
+.qual-btn {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 6px 9px;
+  margin-right: 4px;
+}
+
+.qual-btn:hover {
+  border-color: var(--text-muted);
+  color: var(--text);
+}
+
+.qual-btn.on-yes {
+  background: var(--risk-low-bg);
+  color: var(--risk-low-fg);
+  border-color: var(--risk-low-fg);
+}
+
+.qual-btn.on-no {
+  background: var(--risk-high-bg);
+  color: var(--risk-high-fg);
+  border-color: var(--risk-high-fg);
+}
+
+.notes-input {
+  width: 100%;
+  min-width: 180px;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  resize: vertical;
+}
+
+.promoted-tag {
+  display: inline-block;
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--risk-low-bg);
+  color: var(--risk-low-fg);
+  font-weight: 600;
+}
+
+.scout-stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.scout-stat b {
+  font-size: 14px;
+  color: var(--text);
+}
+
+/* Top-level section switch in the admin topbar. */
+.topnav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 18px;
+  padding-left: 18px;
+  border-left: 1px solid var(--border);
+}
+
+.topnav-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 6px 11px;
+  border-radius: 7px;
+}
+
+.topnav-btn:hover {
+  color: var(--text);
+  background: var(--surface-alt);
+}
+
+.topnav-btn.on {
+  background: var(--accent-bg);
+  color: var(--accent-text);
+}
+
+.scout-link {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.scout-accounts {
+  margin-bottom: 18px;
+}
+
+.scout-newform {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 10px 0;
+}
+
+.scout-hint {
+  font-size: 12px;
+  color: var(--text-faint);
+  margin-bottom: 12px;
+}
+
+.notes-input.saving {
+  opacity: 0.55;
+}

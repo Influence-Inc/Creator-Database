@@ -40,6 +40,7 @@ enum ActivitySource {
   SYSTEM
   CONTRACT_SIGNED
   STATS_SYNC
+  SCOUT_PROMOTION
 }
 
 /// Lifecycle of a signed creator contract.
@@ -151,6 +152,7 @@ model Creator {
   activityLogs ActivityLog[]
   contracts    Contract[]
   stats        CreatorStats[]
+  scoutEntries ScoutEntry[]
 
   @@index([creatorName])
   @@index([campaignId])
@@ -165,12 +167,12 @@ model Campaign {
   id String @id @default(uuid())
 
   /// Human-readable campaign name (unique so outreach sync can upsert by name).
-  name String @unique
+  name                String  @unique
   /// Upstream Instantly campaign UUID, when known.
   instantlyCampaignId String? @unique
   brandName           String?
   /// Full upstream payload stashed for reference / future fields.
-  data Json?
+  data                Json?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -217,17 +219,17 @@ model Contract {
   additionalTerms Json?
 
   // --- Signature + signer details -----------------------------------------
-  status      ContractStatus @default(PENDING)
-  signerName  String?
-  signerEmail String?
-  signerPhone String?
-  signerGender String?
+  status           ContractStatus @default(PENDING)
+  signerName       String?
+  signerEmail      String?
+  signerPhone      String?
+  signerGender     String?
   /// The date the signer entered on the form (distinct from `signedAt`, the
   /// server timestamp the submission was recorded).
   signerSignedDate DateTime?
   /// Drawn-signature image as a base64 data URL (data:image/png;base64,…).
-  signatureImage String? @db.Text
-  signedAt    DateTime?
+  signatureImage   String?        @db.Text
+  signedAt         DateTime?
 
   // --- Signer mailing address ---------------------------------------------
   addressLine1      String?
@@ -313,14 +315,14 @@ model EmailHistory {
   id String @id @default(uuid())
 
   threadId  String
-  messageId String @unique
+  messageId String    @unique
   sender    String?
   recipient String?
   subject   String?
   timestamp DateTime?
 
   /// Raw email body (text or html) as fetched from Instantly.
-  rawEmail String? @db.Text
+  rawEmail    String? @db.Text
   /// Hash of the message content — lets us detect edited threads cheaply.
   contentHash String?
 
@@ -363,11 +365,11 @@ model ActivityLog {
 model FailedJob {
   id String @id @default(uuid())
 
-  jobType JobType
+  jobType  JobType
   /// Arbitrary payload needed to retry the job (e.g. { threadId } or a lead).
-  payload Json
-  error   String  @db.Text
-  attempts Int    @default(1)
+  payload  Json
+  error    String  @db.Text
+  attempts Int     @default(1)
   resolved Boolean @default(false)
 
   createdAt DateTime @default(now())
@@ -396,4 +398,107 @@ model SyncRun {
   @@index([status])
   @@index([startedAt])
   @@map("sync_runs")
+}
+
+/// Who a `User` is and what they may reach.
+///   ADMIN  full Creator Database console (and every scout sheet)
+///   SCOUT  only their own scouting sheet
+enum UserRole {
+  ADMIN
+  SCOUT
+}
+
+/// Self-reported gender of a scouted creator.
+enum ScoutGender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+/// Admin verdict on a scouted creator. Scouts see it but cannot set it.
+enum QualificationStatus {
+  PENDING
+  QUALIFIED
+  REJECTED
+}
+
+/// A person who can sign in. Admins manage the Creator Database console;
+/// scouts get a personal scouting sheet and can only ever see their own rows.
+///
+/// Passwords are stored as scrypt hashes (`scrypt$N$r$p$salt$hash`) — never in
+/// plain text. The bootstrap admin from ADMIN_USERNAME/ADMIN_PASSWORD still
+/// works without a row here, so existing deployments keep signing in unchanged.
+model User {
+  id           String    @id @default(uuid())
+  username     String    @unique
+  passwordHash String
+  displayName  String?
+  role         UserRole  @default(SCOUT)
+  /// Deactivated users keep their rows but can no longer sign in.
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  scoutEntries    ScoutEntry[] @relation("ScoutEntryOwner")
+  reviewedEntries ScoutEntry[] @relation("ScoutEntryReviewer")
+
+  @@index([role])
+  @@index([isActive])
+  @@map("users")
+}
+
+/// One row on a scout's sheet: a creator they found manually online.
+///
+/// `rowNumber` is the visible "numbering" column and is sequential *per scout*,
+/// so each sheet reads 1..n independently. Everything from `instagramProfileLink`
+/// through `language` is scout-editable; `qualification` and `notes` are the
+/// admin's verdict and are read-only to the scout. When an admin qualifies a
+/// row it can be promoted into the Creator Database, and `promotedCreatorId`
+/// links to the resulting master record.
+model ScoutEntry {
+  id String @id @default(uuid())
+
+  /// Owning scout. Rows are only ever visible to this user (and admins).
+  scoutId String
+  scout   User   @relation("ScoutEntryOwner", fields: [scoutId], references: [id], onDelete: Cascade)
+
+  /// Sequential per-scout row number shown as the "numbering" column.
+  rowNumber Int
+
+  // --- Scout-editable fields ----------------------------------------------
+  instagramProfileLink String
+  /// Handle parsed out of the profile link. Used for duplicate detection
+  /// against other sheets and the Creator Database.
+  instagramUsername    String?
+  /// Reels this creator could replicate with the brand integrated.
+  reelIdeas            String?
+  approxAge            Int?
+  gender               ScoutGender?
+  /// Country name, when it can be determined.
+  country              String?
+  language             String?
+
+  // --- Admin-only fields (read-only to the scout) -------------------------
+  qualification QualificationStatus @default(PENDING)
+  notes         String?
+  reviewedAt    DateTime?
+  reviewedById  String?
+  reviewedBy    User?               @relation("ScoutEntryReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  /// Set once the row has been promoted into the Creator Database.
+  promotedCreatorId String?
+  promotedCreator   Creator?  @relation(fields: [promotedCreatorId], references: [id], onDelete: SetNull)
+  promotedAt        DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([scoutId, rowNumber])
+  @@index([scoutId])
+  @@index([qualification])
+  @@index([instagramUsername])
+  @@index([createdAt])
+  @@map("scout_entries")
 }
