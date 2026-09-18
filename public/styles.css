@@ -1530,9 +1530,42 @@ input:focus-visible,
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 18px;
+  gap: 20px;
+  margin-bottom: 22px;
   flex-wrap: wrap;
+}
+
+/* `.btn-primary` carries no horizontal padding — it's only ever used as a
+   full-width form button on the sign-in card, where that's invisible. As an
+   inline button the label ends up flush against the edges and reads as
+   cramped, so the sheet's Add row button gets its own roomier box. The font
+   size is deliberately unchanged; it's the padding that was missing. */
+.btn-add {
+  height: 46px;
+  padding: 0 24px;
+  border-radius: 10px;
+  border: none;
+  background: var(--accent-bg);
+  color: var(--accent-text);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.btn-add:hover:not(:disabled) {
+  opacity: 0.88;
+}
+
+.btn-add:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.btn-add:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .page-title {
@@ -2041,4 +2074,34 @@ table.sheet tbody tr:hover td.sheet-ro {
     height: 34px;
     font-size: 12px;
   }
+}
+
+/* A verdict or note arriving from an admin while the scout is looking at the
+   sheet gets a brief tint, so a value that changed on its own doesn't go
+   unnoticed. Purely additive — no layout shift. */
+@keyframes cellFlash {
+  0% {
+    background-color: var(--st-review-bg);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.cell-flash {
+  animation: cellFlash 1.4s ease-out;
+}
+
+/* datalist-backed inputs get the same affordance as a select, so it's obvious
+   they offer suggestions rather than being plain free text. */
+.sheet-input[list] {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23aaa' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  padding-right: 24px;
+}
+
+/* Chromium renders its own datalist arrow on top of ours; hide it. */
+.sheet-input[list]::-webkit-calendar-picker-indicator {
+  display: none !important;
 }
