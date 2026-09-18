@@ -208,7 +208,7 @@
       '<div class="topbar-right">' +
       '<button class="icon-btn" data-act="theme">' + themeIcon() + '</button>' +
       '<span class="who"><span class="avatar">' + esc((who || '?').charAt(0).toUpperCase()) +
-        '</span>' + esc(who) + '</span>' +
+        '</span><span class="who-name">' + esc(who) + '</span></span>' +
       '<button class="link-btn" data-act="logout">Sign out</button>' +
       '</div>' +
       '</div>';
@@ -233,15 +233,15 @@
     var body = state.rows.length
       ? '<div class="sheet-wrap"><table class="sheet"><thead><tr>' +
         '<th class="sheet-num">#</th>' +
-        '<th>Instagram profile</th>' +
-        '<th>Reels to replicate</th>' +
-        '<th class="sheet-age">Age</th>' +
-        '<th>Gender</th>' +
-        '<th>Location</th>' +
-        '<th>Language</th>' +
-        '<th class="sheet-center" title="Set by an admin — read only">Qualified 🔒</th>' +
-        '<th title="Set by an admin — read only">Notes 🔒</th>' +
-        '<th></th>' +
+        '<th class="col-profile">Instagram profile</th>' +
+        '<th class="col-reels">Reels to replicate</th>' +
+        '<th class="col-age">Age</th>' +
+        '<th class="col-gender">Gender</th>' +
+        '<th class="col-loc">Location</th>' +
+        '<th class="col-lang">Language</th>' +
+        '<th class="col-qual sheet-center" title="Set by an admin — read only">Qualified 🔒</th>' +
+        '<th class="col-notes" title="Set by an admin — read only">Notes 🔒</th>' +
+        '<th class="col-act"></th>' +
         '</tr></thead><tbody>' +
         state.rows.map(function (r, i) { return rowView(r, i + 1); }).join('') +
         '</tbody></table></div>'

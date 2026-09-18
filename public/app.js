@@ -1925,10 +1925,13 @@
         '<div class="empty-s">Rows appear here as soon as your scouters add them.</div></div>';
     } else {
       body =
-        '<div class="sheet-wrap"><table class="sheet"><thead><tr>' +
-        '<th class="sheet-num">#</th><th>Scout</th><th>Instagram profile</th><th>Reels to replicate</th>' +
-        '<th class="sheet-center">Age</th><th>Gender</th><th>Location</th><th>Language</th>' +
-        '<th class="sheet-center">Qualified</th><th>Notes</th><th class="sheet-center">Creator DB</th>' +
+        '<div class="sheet-wrap sheet-wrap--admin"><table class="sheet"><thead><tr>' +
+        '<th class="sheet-num">#</th><th class="col-scout">Scout</th>' +
+        '<th class="col-profile">Instagram profile</th><th class="col-reels">Reels to replicate</th>' +
+        '<th class="col-age sheet-center">Age</th><th class="col-gender">Gender</th>' +
+        '<th class="col-loc">Location</th><th class="col-lang">Language</th>' +
+        '<th class="col-qual sheet-center">Qualified</th><th class="col-notes">Notes</th>' +
+        '<th class="col-promote sheet-center">Creator DB</th>' +
         '</tr></thead><tbody>' + state.scoutEntries.map(scoutEntryRow).join('') + '</tbody></table></div>';
     }
 

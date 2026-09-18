@@ -1500,6 +1500,32 @@ input:focus-visible,
   }
 }
 
+/* On a phone the sheet header's title + identity + sign-out no longer fit, and
+   the overflow drags the whole PAGE sideways — which defeats the point of the
+   table being its own horizontal scroll region. Drop to the essentials so only
+   the sheet scrolls. */
+@media (max-width: 620px) {
+  .topbar {
+    padding: 0 16px;
+  }
+
+  .topbar-title {
+    display: none;
+  }
+
+  .who-name {
+    display: none;
+  }
+
+  .topbar-right {
+    gap: 8px;
+  }
+
+  .sheet-head {
+    gap: 10px;
+  }
+}
+
 .sheet-head {
   display: flex;
   align-items: flex-end;
@@ -1516,18 +1542,25 @@ input:focus-visible,
   margin: 0 0 2px;
 }
 
+/* The sheet is a self-contained scroll region: it scrolls in BOTH directions
+   inside its own box rather than growing the page, so the column headers (and
+   the row-number column) stay put while you work down a long list. */
 .sheet-wrap {
-  overflow-x: auto;
+  overflow: auto;
+  max-height: calc(100vh - 206px);
+  min-height: 180px;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--surface);
+  overscroll-behavior: contain;
 }
 
 table.sheet {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 13px;
-  min-width: 1000px;
+  min-width: 1180px;
 }
 
 table.sheet th {
@@ -1537,32 +1570,82 @@ table.sheet th {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--text-faint);
-  padding: 10px 10px;
+  padding: 11px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--surface-alt);
   white-space: nowrap;
+  /* Header rides along vertically. */
+  position: sticky;
+  top: 0;
+  z-index: 2;
 }
 
+/* Row-number column is frozen so a wide sheet stays readable when scrolled
+   sideways. Needs an opaque background or the cells beneath show through. */
+table.sheet th.sheet-num,
+table.sheet td.sheet-num {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--surface);
+}
+
+table.sheet th.sheet-num {
+  background: var(--surface-alt);
+  z-index: 3;
+}
+
+/* Column sizing — without these the long profile URLs and reel notes squeeze
+   every other column into an unreadable strip. */
+.col-profile { width: 258px; }
+.col-reels { width: 262px; }
+.col-age { width: 76px; }
+.col-gender { width: 112px; }
+.col-loc { width: 142px; }
+.col-lang { width: 142px; }
+.col-qual { width: 104px; }
+.col-notes { width: 210px; }
+.col-act { width: 54px; }
+.col-scout { width: 120px; }
+
+/* The admin Scouts screen carries a filter toolbar (and sometimes the accounts
+   panel) above the table, so it gets a shorter height budget than the scout's
+   own sheet — otherwise the page itself starts scrolling underneath. */
+.sheet-wrap--admin {
+  max-height: calc(100vh - 304px);
+}
+.col-promote { width: 124px; }
+
 table.sheet td {
-  padding: 6px 8px;
+  padding: 7px 10px;
   border-bottom: 1px solid var(--border);
   vertical-align: middle;
 }
 
-table.sheet tr:last-child td {
+table.sheet tbody tr:last-child td {
   border-bottom: none;
 }
 
+table.sheet tbody tr:hover td {
+  background: var(--surface-alt);
+}
+
+table.sheet tbody tr:hover td.sheet-num {
+  background: var(--surface-alt);
+}
+
+/* The read-only (admin-owned) columns stay a step darker than the hover tint,
+   so "you can't edit this" survives the row highlight. */
+table.sheet tbody tr:hover td.sheet-ro {
+  background: var(--border);
+}
+
 .sheet-num {
-  width: 44px;
+  width: 50px;
   text-align: center;
   color: var(--text-faint);
   font-family: 'IBM Plex Mono', monospace;
   font-size: 12px;
-}
-
-.sheet-age {
-  width: 72px;
 }
 
 .sheet-center {
