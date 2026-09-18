@@ -34,6 +34,43 @@ describe('instantly.mapper', () => {
       expect(input.outreachStage).toBe('Active');
     });
 
+    it('matches dashboard-column keys with spaces and capitals', () => {
+      const input = mapLeadToCreator({
+        first_name: 'Mery',
+        payload: {
+          'Instagram Handle': '@mery.creates',
+          'Average Views': '120k',
+          CPM: '12',
+          'Engagement Rate': '3.5',
+          'Accepted Rate': '25k',
+          Manager: 'Jennifer',
+        },
+      });
+
+      expect(input.instagramUsername).toBe('mery.creates');
+      expect(input.averageViews).toBe(120_000);
+      expect(input.cpm).toBe(12);
+      expect(input.engagementRate).toBe(3.5);
+      expect(input.acceptedRate).toBe(25_000);
+      expect(input.assignedManager).toBe('Jennifer');
+    });
+
+    it('extracts the handle from an instagram.com profile URL', () => {
+      const input = mapLeadToCreator({
+        first_name: 'Anh',
+        payload: { 'Instagram Profile': 'https://www.instagram.com/anh_official/' },
+      });
+      expect(input.instagramUsername).toBe('anh_official');
+    });
+
+    it('falls back to scanning any field for an instagram URL', () => {
+      const input = mapLeadToCreator({
+        first_name: 'Bhumika',
+        payload: { socials: 'IG: instagram.com/bhumika.k?hl=en' },
+      });
+      expect(input.instagramUsername).toBe('bhumika.k');
+    });
+
     it('falls back to first/last name and omits unknown fields', () => {
       const input = mapLeadToCreator({ first_name: 'Solo', last_name: 'Creator' });
       expect(input.creatorName).toBe('Solo Creator');

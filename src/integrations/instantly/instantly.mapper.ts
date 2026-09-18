@@ -34,22 +34,69 @@ function str(value: unknown): string | undefined {
   return undefined;
 }
 
-/** Read a value across candidate keys, checking top-level then `payload`. */
+/**
+ * Reduce a key to lowercase alphanumerics so that dashboard-column names like
+ * "Instagram Handle", "instagram_handle", "instagramHandle" and "IG Handle "
+ * all compare equal. Instantly stores custom variables under whatever label the
+ * operator typed (usually Title Case with spaces), so matching on the raw or
+ * merely lower-cased key misses almost everything.
+ */
+function normKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/** Build a normalized-key -> value lookup, keeping the first value per key. */
+function normalizedLookup(source: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(source)) {
+    const nk = normKey(k);
+    if (nk && out[nk] === undefined) out[nk] = v;
+  }
+  return out;
+}
+
+/**
+ * Read a value across candidate keys, checking top-level then `payload`.
+ * Matching is done on normalized keys (alphanumerics only) so spacing and
+ * casing in Instantly's custom-variable labels don't cause misses.
+ */
 function readField(lead: InstantlyLead, keys: string[]): unknown {
   const payload =
     lead.payload && typeof lead.payload === 'object'
       ? (lead.payload as Record<string, unknown>)
       : {};
-  const payloadLower: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(payload)) payloadLower[k.toLowerCase()] = v;
+  const payloadNorm = normalizedLookup(payload);
+  const topNorm = normalizedLookup(lead as Record<string, unknown>);
 
   for (const key of keys) {
-    const top = (lead as Record<string, unknown>)[key];
+    const nk = normKey(key);
+    const top = topNorm[nk];
     if (top !== undefined && top !== null && top !== '') return top;
-    const inPayload = payloadLower[key.toLowerCase()];
+    const inPayload = payloadNorm[nk];
     if (inPayload !== undefined && inPayload !== null && inPayload !== '') return inPayload;
   }
   return undefined;
+}
+
+/**
+ * Last-resort Instagram lookup: scan every string in the lead (top-level and
+ * payload) for an instagram.com profile URL and pull the handle out. Only
+ * matches real IG URLs, so it can never mistake a name or city for a handle.
+ */
+function scanForInstagramUrl(lead: InstantlyLead): string | null {
+  const sources: Record<string, unknown>[] = [lead as Record<string, unknown>];
+  if (lead.payload && typeof lead.payload === 'object') {
+    sources.push(lead.payload as Record<string, unknown>);
+  }
+  for (const source of sources) {
+    for (const value of Object.values(source)) {
+      if (typeof value === 'string' && /instagram\.com\//i.test(value)) {
+        const handle = normalizeInstagram(value);
+        if (handle) return handle;
+      }
+    }
+  }
+  return null;
 }
 
 function joinName(first?: string, last?: string): string | undefined {
@@ -83,9 +130,26 @@ export function mapLeadToCreator(
   const email = normalizeEmail(lead.email);
   if (email) input.email = email;
 
-  const instagram = normalizeInstagram(
-    readField(lead, ['instagram', 'instagram_username', 'ig', 'ig_username', 'instagram_handle']),
-  );
+  const instagram =
+    normalizeInstagram(
+      readField(lead, [
+        'instagram',
+        'instagram_username',
+        'ig',
+        'ig_username',
+        'instagram_handle',
+        'ig_handle',
+        'insta',
+        'insta_handle',
+        'instagram_id',
+        'instagram_profile',
+        'instagram_profile_link',
+        'instagram_link',
+        'instagram_url',
+        'ig_link',
+        'profile_link',
+      ]),
+    ) ?? scanForInstagramUrl(lead);
   if (instagram) input.instagramUsername = instagram;
 
   const creatorName = normalizeName(
