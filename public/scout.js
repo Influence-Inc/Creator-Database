@@ -22,6 +22,63 @@
     { value: 'OTHER', label: 'Other' }
   ];
 
+
+  // Country + language options for the type-ahead dropdowns. Rendered once into
+  // <datalist> elements: the browser filters them as you type and still accepts
+  // anything not on the list, so an unusual answer is never blocked.
+  var COUNTRIES = [
+    'Afghanistan','Albania','Algeria','Andorra','Angola','Antigua and Barbuda','Argentina','Armenia',
+    'Australia','Austria','Azerbaijan','Bahamas','Bahrain','Bangladesh','Barbados','Belarus','Belgium',
+    'Belize','Benin','Bhutan','Bolivia','Bosnia and Herzegovina','Botswana','Brazil','Brunei','Bulgaria',
+    'Burkina Faso','Burundi','Cambodia','Cameroon','Canada','Cape Verde','Central African Republic','Chad',
+    'Chile','China','Colombia','Comoros','Congo','Costa Rica','Croatia','Cuba','Cyprus','Czechia',
+    'Democratic Republic of the Congo','Denmark','Djibouti','Dominica','Dominican Republic','Ecuador','Egypt',
+    'El Salvador','Equatorial Guinea','Eritrea','Estonia','Eswatini','Ethiopia','Fiji','Finland','France',
+    'Gabon','Gambia','Georgia','Germany','Ghana','Greece','Grenada','Guatemala','Guinea','Guinea-Bissau',
+    'Guyana','Haiti','Honduras','Hong Kong','Hungary','Iceland','India','Indonesia','Iran','Iraq','Ireland',
+    'Israel','Italy','Ivory Coast','Jamaica','Japan','Jordan','Kazakhstan','Kenya','Kiribati','Kosovo',
+    'Kuwait','Kyrgyzstan','Laos','Latvia','Lebanon','Lesotho','Liberia','Libya','Liechtenstein','Lithuania',
+    'Luxembourg','Macau','Madagascar','Malawi','Malaysia','Maldives','Mali','Malta','Marshall Islands',
+    'Mauritania','Mauritius','Mexico','Micronesia','Moldova','Monaco','Mongolia','Montenegro','Morocco',
+    'Mozambique','Myanmar','Namibia','Nauru','Nepal','Netherlands','New Zealand','Nicaragua','Niger',
+    'Nigeria','North Korea','North Macedonia','Norway','Oman','Pakistan','Palau','Palestine','Panama',
+    'Papua New Guinea','Paraguay','Peru','Philippines','Poland','Portugal','Puerto Rico','Qatar','Romania',
+    'Russia','Rwanda','Saint Kitts and Nevis','Saint Lucia','Saint Vincent and the Grenadines','Samoa',
+    'San Marino','Sao Tome and Principe','Saudi Arabia','Senegal','Serbia','Seychelles','Sierra Leone',
+    'Singapore','Slovakia','Slovenia','Solomon Islands','Somalia','South Africa','South Korea','South Sudan',
+    'Spain','Sri Lanka','Sudan','Suriname','Sweden','Switzerland','Syria','Taiwan','Tajikistan','Tanzania',
+    'Thailand','Timor-Leste','Togo','Tonga','Trinidad and Tobago','Tunisia','Turkey','Turkmenistan','Tuvalu',
+    'Uganda','Ukraine','United Arab Emirates','United Kingdom','United States','Uruguay','Uzbekistan',
+    'Vanuatu','Vatican City','Venezuela','Vietnam','Yemen','Zambia','Zimbabwe'
+  ];
+
+  var LANGUAGES = [
+    'Afrikaans','Albanian','Amharic','Arabic','Armenian','Assamese','Azerbaijani','Basque','Belarusian',
+    'Bengali','Bhojpuri','Bosnian','Bulgarian','Burmese','Cantonese','Catalan','Cebuano','Chinese',
+    'Croatian','Czech','Danish','Dutch','English','Estonian','Filipino','Finnish','French','Galician',
+    'Georgian','German','Greek','Gujarati','Haitian Creole','Hausa','Hebrew','Hindi','Hungarian',
+    'Icelandic','Igbo','Indonesian','Irish','Italian','Japanese','Javanese','Kannada','Kazakh','Khmer',
+    'Kinyarwanda','Konkani','Korean','Kurdish','Kyrgyz','Lao','Latvian','Lithuanian','Luxembourgish',
+    'Macedonian','Maithili','Malagasy','Malay','Malayalam','Maltese','Mandarin','Marathi','Mongolian',
+    'Nepali','Norwegian','Odia','Oromo','Pashto','Persian','Polish','Portuguese','Punjabi','Romanian',
+    'Russian','Sanskrit','Serbian','Sesotho','Shona','Sindhi','Sinhala','Slovak','Slovenian','Somali',
+    'Spanish','Swahili','Swedish','Tagalog','Tajik','Tamil','Tatar','Telugu','Thai','Tigrinya','Turkish',
+    'Turkmen','Ukrainian','Urdu','Uyghur','Uzbek','Vietnamese','Welsh','Wolof','Xhosa','Yiddish','Yoruba',
+    'Zulu'
+  ];
+
+  function dataLists() {
+    var opts = function (list) {
+      return list
+        .map(function (v) { return '<option value="' + esc(v) + '"></option>'; })
+        .join('');
+    };
+    return (
+      '<datalist id="country-list">' + opts(COUNTRIES) + '</datalist>' +
+      '<datalist id="language-list">' + opts(LANGUAGES) + '</datalist>'
+    );
+  }
+
   var state = {
     view: 'loading', // loading | login | sheet
     username: '',
@@ -54,6 +111,7 @@
       body: opts.body ? JSON.stringify(opts.body) : undefined
     }).then(function (res) {
       if (res.status === 401) {
+        stopLiveSync();
         setState({ view: 'login', me: null, rows: [] });
         throw new Error('unauthenticated');
       }
@@ -148,6 +206,14 @@
     return '<span class="qual qual-pending" title="Not reviewed yet">·</span>';
   }
 
+  function notesCell(row) {
+    return (
+      '<span class="sheet-notes">' +
+      (row.notes ? esc(row.notes) : '<span class="sheet-muted">—</span>') +
+      '</span>'
+    );
+  }
+
   function genderSelect(row) {
     var opts = GENDERS.map(function (g) {
       return (
@@ -159,10 +225,11 @@
     return '<select class="sheet-input" data-field="gender" data-id="' + esc(row.id) + '">' + opts + '</select>';
   }
 
-  function textCell(row, field, placeholder, type) {
+  function textCell(row, field, placeholder, type, listId) {
     return (
       '<input class="sheet-input" type="' + (type || 'text') + '"' +
       ' data-field="' + field + '" data-id="' + esc(row.id) + '"' +
+      (listId ? ' list="' + listId + '" autocomplete="off"' : '') +
       ' value="' + esc(row[field] === null || row[field] === undefined ? '' : row[field]) + '"' +
       ' placeholder="' + esc(placeholder || '') + '">'
     );
@@ -177,7 +244,7 @@
    */
   function rowView(row, position) {
     return (
-      '<tr>' +
+      '<tr data-row="' + esc(row.id) + '">' +
       '<td class="sheet-num">' + esc(position) + '</td>' +
       '<td>' + textCell(row, 'instagramProfileLink', 'instagram.com/handle') +
         (row.instagramUsername
@@ -188,11 +255,11 @@
       '<td>' + textCell(row, 'reelIdeas', 'Reels they could replicate with the brand') + '</td>' +
       '<td>' + textCell(row, 'approxAge', 'Age', 'number') + '</td>' +
       '<td>' + genderSelect(row) + '</td>' +
-      '<td>' + textCell(row, 'country', 'Country') + '</td>' +
-      '<td>' + textCell(row, 'language', 'Language') + '</td>' +
-      '<td class="sheet-ro sheet-center">' + qualificationCell(row) + '</td>' +
-      '<td class="sheet-ro"><span class="sheet-notes">' +
-        (row.notes ? esc(row.notes) : '<span class="sheet-muted">—</span>') + '</span></td>' +
+      '<td>' + textCell(row, 'country', 'Country', 'text', 'country-list') + '</td>' +
+      '<td>' + textCell(row, 'language', 'Language', 'text', 'language-list') + '</td>' +
+      '<td class="sheet-ro sheet-center" data-cell="qualification">' +
+        qualificationCell(row) + '</td>' +
+      '<td class="sheet-ro" data-cell="notes">' + notesCell(row) + '</td>' +
       '<td class="sheet-center"><button class="row-del" data-act="del" data-id="' + esc(row.id) +
         '" title="Delete row">✕</button></td>' +
       '</tr>'
@@ -219,7 +286,7 @@
       '<div class="page-sub">' + state.rows.length +
         ' row' + (state.rows.length === 1 ? '' : 's') +
         ' · only you and an admin can see this sheet</div></div>' +
-      '<button class="btn-primary" data-act="add"' + (state.adding ? ' disabled' : '') + '>' +
+      '<button class="btn-add" data-act="add"' + (state.adding ? ' disabled' : '') + '>' +
       (state.adding ? 'Adding…' : '+ Add row') +
       '</button>' +
       '</div>';
@@ -248,7 +315,7 @@
       : '<div class="empty"><div class="empty-t">No creators yet</div>' +
         '<div class="empty-s">Add your first row to start scouting.</div></div>';
 
-    return head + '<div class="sheet-page">' + intro + body + '</div>';
+    return head + '<div class="sheet-page">' + intro + body + '</div>' + dataLists();
   }
 
   function toastView() {
@@ -270,6 +337,113 @@
     }
     root.innerHTML = sheetView() + toastView();
   }
+
+
+  // ---- live sync ----------------------------------------------------------
+  // An admin can qualify a row or leave a note at any moment. Rather than make
+  // the scout reload to find out, poll quietly and fold the result in.
+  //
+  // The hard requirement is that this must never disturb someone mid-edit, so:
+  //   * the admin-owned cells (verdict + notes) are patched directly into the
+  //     DOM instead of re-rendering the table, which would blow away an open
+  //     dropdown, a text selection or an un-blurred edit;
+  //   * a structural change (a row added or removed elsewhere) does need a full
+  //     re-render, so it waits until no field inside the sheet has focus;
+  //   * polling stops while the tab is hidden and catches up on return, so a
+  //     backgrounded sheet isn't making requests all day.
+  var LIVE_SYNC_MS = 10000;
+  var liveTimer = null;
+
+  function sheetHasFocus() {
+    var a = document.activeElement;
+    return !!(a && a.closest && a.closest('table.sheet'));
+  }
+
+  function flash(el) {
+    if (!el) return;
+    el.classList.remove('cell-flash');
+    // Force a reflow so re-adding the class restarts the animation.
+    void el.offsetWidth;
+    el.classList.add('cell-flash');
+  }
+
+  /** Repaint one row's admin-owned cells without touching the rest of the DOM. */
+  function patchVerdict(row) {
+    var tr = document.querySelector('tr[data-row="' + row.id + '"]');
+    if (!tr) return;
+    var qual = tr.querySelector('[data-cell="qualification"]');
+    var notes = tr.querySelector('[data-cell="notes"]');
+    if (qual) {
+      qual.innerHTML = qualificationCell(row);
+      flash(qual);
+    }
+    if (notes) {
+      notes.innerHTML = notesCell(row);
+      flash(notes);
+    }
+  }
+
+  function sameVerdict(a, b) {
+    return (
+      a.qualification === b.qualification &&
+      (a.notes || '') === (b.notes || '') &&
+      (a.promotedCreatorId || null) === (b.promotedCreatorId || null)
+    );
+  }
+
+  function applyLiveRows(rows) {
+    if (state.view !== 'sheet') return;
+
+    var sameShape =
+      rows.length === state.rows.length &&
+      rows.every(function (r, i) { return state.rows[i] && state.rows[i].id === r.id; });
+
+    if (!sameShape) {
+      // Rows were added or removed. That needs a real re-render, so hold off
+      // until the scout isn't typing — the next poll will pick it up.
+      if (sheetHasFocus()) return;
+      state.rows = rows;
+      render();
+      return;
+    }
+
+    var incoming = {};
+    rows.forEach(function (r) { incoming[r.id] = r; });
+
+    state.rows = state.rows.map(function (row) {
+      var next = incoming[row.id];
+      if (!next || sameVerdict(row, next)) return row;
+      patchVerdict(next);
+      return next;
+    });
+  }
+
+  function pollLive() {
+    if (state.view !== 'sheet' || document.hidden) return;
+    api('/scouts/entries')
+      .then(function (rows) {
+        if (Array.isArray(rows)) applyLiveRows(rows);
+      })
+      .catch(function () {
+        // A failed poll is not worth interrupting anyone over; the next one or
+        // an explicit action will surface a real problem.
+      });
+  }
+
+  function startLiveSync() {
+    stopLiveSync();
+    liveTimer = setInterval(pollLive, LIVE_SYNC_MS);
+  }
+
+  function stopLiveSync() {
+    if (liveTimer) clearInterval(liveTimer);
+    liveTimer = null;
+  }
+
+  document.addEventListener('visibilitychange', function () {
+    // Catch up immediately on return rather than waiting out the interval.
+    if (!document.hidden && state.view === 'sheet') pollLive();
+  });
 
   // ---- data ---------------------------------------------------------------
 
@@ -295,6 +469,7 @@
         state.me = { username: s.username, displayName: s.displayName };
         setState({ view: 'sheet' });
         loadRows();
+        startLiveSync();
       })
       .catch(function () {
         setState({ view: 'login' });
@@ -316,6 +491,7 @@
       api('/auth/logout', { method: 'POST' })
         .catch(function () {})
         .then(function () {
+          stopLiveSync();
           setState({ view: 'login', me: null, rows: [], username: '', password: '' });
         });
       return;
@@ -439,6 +615,7 @@
         state.me = { username: r.data.username, displayName: r.data.displayName };
         setState({ loggingIn: false, view: 'sheet', username: '', password: '' });
         loadRows();
+        startLiveSync();
       })
       .catch(function () {
         setState({ loggingIn: false, loginError: 'Could not reach the server. Try again.' });
