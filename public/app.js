@@ -20,6 +20,16 @@
     loggingIn: false,
     search: '',
     usageFilter: 'Used', // Used (default) | Unused | All
+    // Dropdown filters on the roster (platform, campaigns, views, engagement,
+    // CPM, risk). Keyed by facet, '' meaning "no filter". See ROSTER_FACETS.
+    facets: {
+      platform: '',
+      campaigns: '',
+      views: '',
+      engagement: '',
+      cpm: '',
+      risk: ''
+    },
     // Roster sort — click a column header to change. Views-desc by default so
     // the biggest creators lead.
     sortKey: 'views',
@@ -236,6 +246,145 @@
 
   // Used/Unused roster filter. "Used" is the default so the roster leads with
   // creators we've actually worked with (signed a contract).
+
+  // ---- roster facets ------------------------------------------------------
+  // Declarative filter definitions: each facet renders as one dropdown and is
+  // tested by the same generic matcher, so adding "filter by X" later is a new
+  // entry here rather than another branch in the filtering code.
+  //
+  // Numeric buckets are half-open — `min` inclusive, `max` exclusive — so
+  // adjacent ranges (1–3% and 3–5%) can't both claim a creator sitting exactly
+  // on the boundary.
+  var ROSTER_FACETS = [
+    {
+      key: 'platform',
+      placeholder: 'Any platform',
+      kind: 'platform',
+      options: [
+        { v: 'IG', label: 'Instagram' },
+        { v: 'YT', label: 'YouTube' },
+        { v: 'TT', label: 'TikTok' }
+      ]
+    },
+    {
+      key: 'campaigns',
+      placeholder: 'Any campaigns',
+      kind: 'range',
+      field: 'campaigns',
+      options: [
+        { v: '0', label: 'No campaigns', max: 1 },
+        { v: '1', label: '1–2 campaigns', min: 1, max: 3 },
+        { v: '3', label: '3–5 campaigns', min: 3, max: 6 },
+        { v: '6', label: '6+ campaigns', min: 6 }
+      ]
+    },
+    {
+      key: 'views',
+      placeholder: 'Any views',
+      kind: 'range',
+      field: 'views',
+      options: [
+        { v: 'a', label: 'Under 100K views', max: 100000 },
+        { v: 'b', label: '100K – 1M views', min: 100000, max: 1000000 },
+        { v: 'c', label: '1M – 10M views', min: 1000000, max: 10000000 },
+        { v: 'd', label: '10M+ views', min: 10000000 }
+      ]
+    },
+    {
+      key: 'engagement',
+      placeholder: 'Any engagement',
+      kind: 'range',
+      field: 'engagement',
+      options: [
+        { v: 'a', label: 'Under 1% engagement', max: 1 },
+        { v: 'b', label: '1% – 3% engagement', min: 1, max: 3 },
+        { v: 'c', label: '3% – 5% engagement', min: 3, max: 5 },
+        { v: 'd', label: '5%+ engagement', min: 5 }
+      ]
+    },
+    {
+      key: 'cpm',
+      placeholder: 'Any CPM',
+      kind: 'range',
+      field: 'cpm',
+      options: [
+        { v: 'a', label: 'Under $1 CPM', max: 1 },
+        { v: 'b', label: '$1 – $5 CPM', min: 1, max: 5 },
+        { v: 'c', label: '$5 – $10 CPM', min: 5, max: 10 },
+        { v: 'd', label: '$10+ CPM', min: 10 }
+      ]
+    },
+    {
+      key: 'risk',
+      placeholder: 'Any risk level',
+      kind: 'value',
+      field: 'risk',
+      options: [
+        // Values must match what the roster API emits (normalizeRisk shortens
+        // "Medium" to "Med"), not the label we show.
+        { v: 'Low', label: 'Low risk' },
+        { v: 'Med', label: 'Medium risk' },
+        { v: 'High', label: 'High risk' }
+      ]
+    }
+  ];
+
+  function facetByKey(key) {
+    for (var i = 0; i < ROSTER_FACETS.length; i++) {
+      if (ROSTER_FACETS[i].key === key) return ROSTER_FACETS[i];
+    }
+    return null;
+  }
+
+  function facetOption(facet, value) {
+    for (var i = 0; i < facet.options.length; i++) {
+      if (facet.options[i].v === value) return facet.options[i];
+    }
+    return null;
+  }
+
+  function matchesFacet(c, facet) {
+    var value = state.facets[facet.key];
+    if (!value) return true;
+
+    if (facet.kind === 'platform') return (c.platforms || []).indexOf(value) >= 0;
+    if (facet.kind === 'value') return String(c[facet.field] || '') === value;
+
+    var opt = facetOption(facet, value);
+    if (!opt) return true;
+
+    // A creator with no number for this column (e.g. CPM we've never recorded)
+    // isn't "0" — it's unknown, so an explicit numeric filter excludes it
+    // rather than silently sorting it into the lowest bucket.
+    var n = c[facet.field];
+    if (n === null || n === undefined || n === '' || isNaN(n)) return false;
+    n = Number(n);
+    if (opt.min !== undefined && n < opt.min) return false;
+    if (opt.max !== undefined && n >= opt.max) return false;
+    return true;
+  }
+
+  function matchesFacets(c) {
+    for (var i = 0; i < ROSTER_FACETS.length; i++) {
+      if (!matchesFacet(c, ROSTER_FACETS[i])) return false;
+    }
+    return true;
+  }
+
+  function activeFacetCount() {
+    var n = 0;
+    for (var i = 0; i < ROSTER_FACETS.length; i++) {
+      if (state.facets[ROSTER_FACETS[i].key]) n += 1;
+    }
+    return n;
+  }
+
+  function emptyFacets() {
+    var out = {};
+    for (var i = 0; i < ROSTER_FACETS.length; i++) out[ROSTER_FACETS[i].key] = '';
+    return out;
+  }
+
   function matchesUsage(c) {
     if (state.usageFilter === 'All') return true;
     if (state.usageFilter === 'Unused') return c.segment === 'unused';
@@ -274,7 +423,7 @@
     if (!state.roster || !state.roster.creators) return [];
     var q = state.search.trim().toLowerCase();
     var list = state.roster.creators.filter(function (c) {
-      return matchesQuery(c, q) && matchesUsage(c);
+      return matchesQuery(c, q) && matchesUsage(c) && matchesFacets(c);
     });
     var col = sortCol(state.sortKey);
     if (!col) return list;
@@ -297,7 +446,7 @@
 
   // Any filter narrowing the roster? Drives the "Clear filters" affordance.
   function filtersActive() {
-    return state.search.trim() !== '' || state.usageFilter !== 'Used';
+    return state.search.trim() !== '' || state.usageFilter !== 'Used' || activeFacetCount() > 0;
   }
   function usageChips() {
     return ['Used', 'Unused', 'All']
@@ -869,6 +1018,43 @@
         'K</button>';
   }
 
+
+  // The roster filter bar: one dropdown per facet plus a reset. Rendered under
+  // the search row so the segment chips (Used/Unused/All) stay the primary cut
+  // and these read as refinements of it.
+  function facetBar() {
+    var selects = ROSTER_FACETS.map(function (f) {
+      var current = state.facets[f.key] || '';
+      var opts =
+        '<option value="">' + esc(f.placeholder) + '</option>' +
+        f.options
+          .map(function (o) {
+            return (
+              '<option value="' + esc(o.v) + '"' +
+              (current === o.v ? ' selected' : '') +
+              '>' + esc(o.label) + '</option>'
+            );
+          })
+          .join('');
+      return (
+        '<select class="facet' + (current ? ' on' : '') +
+        '" data-act="facet" data-facet="' + esc(f.key) +
+        '" aria-label="' + esc(f.placeholder) + '">' + opts + '</select>'
+      );
+    }).join('');
+
+    // The reset belongs to the dropdowns only, and appears once at least one is
+    // set. The Used/Unused/All chips are their own always-visible control, so
+    // folding them in here would show a Clear button that visibly does nothing.
+    var n = activeFacetCount();
+    var reset = n
+      ? '<button class="facet-reset" data-act="clear-facets">Clear ' + n + ' filter' +
+        (n === 1 ? '' : 's') + '</button>'
+      : '';
+
+    return '<div class="filterbar">' + selects + reset + '</div>';
+  }
+
   function rosterView() {
     var data = state.roster;
     var head =
@@ -894,7 +1080,8 @@
         : '<div id="roster-body">' + rosterBody() + '</div>';
 
     return (
-      '<div class="app">' + topbar() + '<div class="page list fade">' + head + body + '</div></div>'
+      '<div class="app">' + topbar() +
+      '<div class="page list fade">' + head + facetBar() + body + '</div></div>'
     );
   }
 
@@ -2107,6 +2294,17 @@
       });
   });
 
+
+  // Roster filter dropdowns.
+  document.addEventListener('change', function (e) {
+    var sel = e.target.closest('[data-act="facet"]');
+    if (!sel) return;
+    var key = sel.getAttribute('data-facet');
+    if (!facetByKey(key)) return;
+    state.facets[key] = sel.value;
+    render();
+  });
+
   function render() {
     if (state.view === 'loading') {
       root.innerHTML = '<div class="spinner"></div>';
@@ -2174,9 +2372,14 @@
       state.search = '';
       return render();
     }
+    if (act === 'clear-facets') {
+      state.facets = emptyFacets();
+      return render();
+    }
     if (act === 'clear-filters') {
       state.search = '';
       state.usageFilter = 'All';
+      state.facets = emptyFacets();
       return render();
     }
     if (act === 'copy') {
