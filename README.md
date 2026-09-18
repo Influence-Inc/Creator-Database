@@ -39,6 +39,22 @@ the read API is no longer open. Mutations keep requiring `x-api-key`. When
 `ADMIN_PASSWORD` is unset the console and reads stay open (dev/test) with a
 startup warning. `/health` and `/auth/*` are always public.
 
+**Scouting sheets.** Manual scouters get their own page at `/scout`, replacing
+the shared spreadsheet. An admin creates each account under **Scouts → Manage
+scouters** in the console (`POST /users`, role `SCOUT`, scrypt-hashed password);
+the scouter then signs in at `/scout` and sees **only their own rows** — the
+server scopes every read and write to their user id, so one scouter can never
+see or edit another's sheet (another scout's row answers `404`, not `403`, so it
+can't even be probed for). They fill in the Instagram profile, reels the creator
+could replicate with the brand integrated, approximate age, gender, location and
+language; the **qualification** tick/cross and **notes** columns are read-only to
+them and set by an admin under **Scouts** in the console. A qualified row can be
+promoted into the Creator Database with one click — promotion routes through the
+same `upsertFromSource` merge path as every other source (activity source
+`SCOUT_PROMOTION`), so scouting someone already known updates that master record
+instead of duplicating it. Scouting a profile that already exists warns the
+scouter but still saves, since they can't see the sheet it collides with.
+
 **Maintenance.** To clear placeholder data before the first real import, call
 `POST /maintenance/purge-demo` (guarded by `x-api-key`) — it deletes only the
 demo/seed markers (the `prisma/seed.ts` creator + any `@example.com` address)

@@ -1,8 +1,16 @@
-import { CanActivate, ExecutionContext, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import {
+  CanActivate,
+  ExecutionContext,
+  Injectable,
+  Logger,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
+import { UserRole } from '@prisma/client';
 import { Request } from 'express';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
+import { ROLES_KEY } from '../decorators/roles.decorator';
 import { parseCookies } from '../utils/cookies';
 import { AuthService, SESSION_COOKIE } from '../../modules/auth/auth.service';
 
@@ -46,9 +54,18 @@ export class ReadAccessGuard implements CanActivate {
       return true;
     }
 
-    // 1) Valid admin session cookie (browser console).
-    const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
-    if (this.auth.verifyToken(token)) return true;
+    // 1) Valid session cookie (browser console). Reads are ADMIN-only unless
+    // the route opts in with @Roles — so a scout session can reach its own
+    // scouting sheet but never /creators, /roster, /contracts and friends.
+    const allowed = this.reflector.getAllAndOverride<UserRole[]>(ROLES_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]) ?? [UserRole.ADMIN];
+    const principal = this.auth.verifySession(parseCookies(req.headers.cookie)[SESSION_COOKIE]);
+    if (principal) {
+      if (allowed.includes(principal.role)) return true;
+      throw new UnauthorizedException('You do not have access to this resource');
+    }
 
     // 2) Machine consumers presenting the shared secret.
     const expectedKey = this.config.get<string>('security.internalApiKey');

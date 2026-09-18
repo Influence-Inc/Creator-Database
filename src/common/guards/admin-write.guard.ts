@@ -1,5 +1,6 @@
 import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { UserRole } from '@prisma/client';
 import { Request } from 'express';
 import { parseCookies } from '../utils/cookies';
 import { AuthService, SESSION_COOKIE } from '../../modules/auth/auth.service';
@@ -26,8 +27,10 @@ export class AdminWriteGuard implements CanActivate {
 
     const req = context.switchToHttp().getRequest<Request>();
 
-    const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
-    if (this.auth.verifyToken(token)) return true;
+    // Admin-console writes require an ADMIN session specifically — a scout
+    // session must never reach creator/roster mutations.
+    const principal = this.auth.verifySession(parseCookies(req.headers.cookie)[SESSION_COOKIE]);
+    if (principal?.role === UserRole.ADMIN) return true;
 
     const expectedKey = this.config.get<string>('security.internalApiKey');
     const provided = req.headers['x-api-key'];

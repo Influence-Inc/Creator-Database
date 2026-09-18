@@ -18,8 +18,10 @@ import { EmailHistoryModule } from './modules/email-history/email-history.module
 import { HealthModule } from './modules/health/health.module';
 import { MaintenanceModule } from './modules/maintenance/maintenance.module';
 import { RosterModule } from './modules/roster/roster.module';
+import { ScoutsModule } from './modules/scouts/scouts.module';
 import { StatisticsModule } from './modules/statistics/statistics.module';
 import { SyncModule } from './modules/sync/sync.module';
+import { UsersModule } from './modules/users/users.module';
 
 /**
  * Root module. Global infrastructure (config, logging, Prisma, scheduling) is
@@ -48,6 +50,8 @@ import { SyncModule } from './modules/sync/sync.module';
     EmailHistoryModule,
     SyncModule,
     RosterModule,
+    UsersModule,
+    ScoutsModule,
     MaintenanceModule,
     HealthModule,
   ],
