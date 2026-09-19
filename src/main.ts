@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { IncomingMessage } from 'node:http';
 import { join } from 'node:path';
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -33,7 +34,16 @@ async function bootstrap(): Promise<void> {
   // Signed contracts carry a drawn-signature image as a base64 data URL, which
   // can exceed Express's default 100kb JSON body limit — raise it so those
   // writes aren't rejected with 413.
-  app.useBodyParser('json', { limit: '6mb' });
+  app.useBodyParser('json', {
+    limit: '6mb',
+    // Keep the exact bytes of the request. Meta signs the raw payload of an
+    // Instagram webhook, and a re-serialised body won't reproduce that digest —
+    // key order and whitespace both matter — so the signature could never be
+    // verified without this.
+    verify: (req: IncomingMessage & { rawBody?: Buffer }, _res: unknown, buf: Buffer) => {
+      if (buf && buf.length) req.rawBody = Buffer.from(buf);
+    },
+  });
 
   // Serve the admin UI (static SPA) from /public. API controllers are mounted
   // at their own paths (/creators, /roster, /contracts, …); express.static only
