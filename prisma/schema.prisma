@@ -438,14 +438,25 @@ model User {
   isActive     Boolean   @default(true)
   lastLoginAt  DateTime?
 
+  /// Instagram handle this scout sends finds from, set by an admin. Inbound DMs
+  /// to the company account are matched to a scout by this, so a scout with no
+  /// handle set simply never receives anything from Instagram.
+  instagramHandle String? @unique
+  /// Instagram-scoped user id (IGSID) for the same person. Meta identifies a
+  /// sender by this opaque id rather than by username, so it's cached the first
+  /// time a message is matched and used directly afterwards.
+  instagramUserId String? @unique
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  scoutEntries    ScoutEntry[] @relation("ScoutEntryOwner")
-  reviewedEntries ScoutEntry[] @relation("ScoutEntryReviewer")
+  scoutEntries      ScoutEntry[]       @relation("ScoutEntryOwner")
+  reviewedEntries   ScoutEntry[]       @relation("ScoutEntryReviewer")
+  instagramMessages InstagramMessage[]
 
   @@index([role])
   @@index([isActive])
+  @@index([instagramUserId])
   @@map("users")
 }
 
@@ -495,10 +506,72 @@ model ScoutEntry {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  instagramMessages InstagramMessage[]
+
   @@unique([scoutId, rowNumber])
   @@index([scoutId])
   @@index([qualification])
   @@index([instagramUsername])
   @@index([createdAt])
   @@map("scout_entries")
+}
+
+/// What happened to an inbound Instagram DM.
+enum InstagramMessageStatus {
+  /// Matched to a scout and written onto one of their rows.
+  APPLIED
+  /// Contained no Instagram profile or reel link, so there was nothing to file.
+  NO_LINKS
+  /// Sender isn't linked to any scout — an admin needs to set that handle.
+  UNMATCHED_SENDER
+  /// Something went wrong while processing; `statusNote` says what.
+  FAILED
+}
+
+/// Ledger of every direct message the company Instagram account receives.
+///
+/// This exists for three reasons: Meta redelivers webhooks, so `messageId` being
+/// unique is what stops one share being filed twice; a message from someone we
+/// can't place must stay visible instead of vanishing; and `raw` keeps the exact
+/// payload, so if Meta's shape differs from what's expected the evidence is on
+/// hand rather than lost.
+model InstagramMessage {
+  id String @id @default(uuid())
+
+  /// Meta's own message id (`mid`). Unique — redelivery is a no-op.
+  messageId      String  @unique
+  /// Instagram-scoped id of the sender.
+  senderId       String
+  /// Resolved at ingest time when an access token is configured.
+  senderUsername String?
+
+  text         String?
+  /// instagram.com profile links found in the message.
+  profileLinks String[] @default([])
+  /// Reel/post links found in the message.
+  reelLinks    String[] @default([])
+  /// Share attachments whose URL wasn't an instagram.com permalink (Meta
+  /// sometimes sends a CDN media URL instead). Kept so nothing is discarded.
+  otherLinks   String[] @default([])
+
+  status     InstagramMessageStatus
+  statusNote String?
+
+  scoutId String?
+  scout   User?   @relation(fields: [scoutId], references: [id], onDelete: SetNull)
+
+  /// The sheet row this message created or filled in.
+  entryId String?
+  entry   ScoutEntry? @relation(fields: [entryId], references: [id], onDelete: SetNull)
+
+  /// Verbatim webhook payload for this message.
+  raw Json?
+
+  receivedAt DateTime @default(now())
+
+  @@index([status])
+  @@index([senderId])
+  @@index([scoutId])
+  @@index([receivedAt])
+  @@map("instagram_messages")
 }

@@ -53,6 +53,8 @@
     promoting: false,
     promoteError: null,
     scoutAccountsOpen: false,
+    igLogOpen: false,
+    igMessages: null,
     newScoutName: '',
     newScoutUser: '',
     newScoutPass: '',
@@ -2044,10 +2046,24 @@
   function scoutAccountsPanel() {
     if (!state.scoutAccountsOpen) return '';
     var rows = (state.scoutUsers || []).map(function (u) {
+      // The Instagram handle is what inbound DMs are matched on, so it's
+      // editable right here — a scout without one simply never receives
+      // anything from Instagram, and that should be obvious at a glance.
+      var ig =
+        '<input class="ig-input" data-act="scout-ig" data-id="' + esc(u.id) +
+        '" value="' + esc(u.instagramHandle ? '@' + u.instagramHandle : '') +
+        '" placeholder="@handle" autocomplete="off" spellcheck="false">' +
+        (u.instagramHandle
+          ? u.instagramLinked
+            ? '<span class="ig-state ig-ok" title="A message from this account has been received">linked</span>'
+            : '<span class="ig-state ig-wait" title="Waiting for the first message from this account">awaiting DM</span>'
+          : '');
+
       return (
         '<tr>' +
         '<td>' + esc(u.displayName || '—') + '</td>' +
         '<td class="mono">' + esc(u.username) + '</td>' +
+        '<td>' + ig + '</td>' +
         '<td class="sheet-center">' + esc(u.entryCount || 0) + '</td>' +
         '<td class="sheet-center">' +
           (u.isActive ? '<span class="promoted-tag">Active</span>' : '<span class="sheet-muted">Disabled</span>') +
@@ -2071,13 +2087,16 @@
       '<input class="scout-search" name="displayName" placeholder="Full name" value="' + esc(state.newScoutName) + '">' +
       '<input class="scout-search" name="username" placeholder="username" value="' + esc(state.newScoutUser) + '" autocomplete="off">' +
       '<input class="scout-search" name="password" type="text" placeholder="password (min 8 chars)" value="' + esc(state.newScoutPass) + '" autocomplete="new-password">' +
-      '<button class="btn-primary" type="submit"' + (state.scoutCreating ? ' disabled' : '') + '>' +
+      '<input class="scout-search" name="instagramHandle" placeholder="@instagram (optional)" autocomplete="off">' +
+      '<button class="btn-add" type="submit"' + (state.scoutCreating ? ' disabled' : '') + '>' +
       (state.scoutCreating ? 'Creating…' : 'Add scouter') + '</button>' +
       '</form>' +
       (state.scoutAccountError ? '<div class="login-err">' + esc(state.scoutAccountError) + '</div>' : '') +
-      '<div class="scout-hint">Scouters sign in at <span class="mono">/scout</span> and only ever see their own sheet.</div>' +
+      '<div class="scout-hint">Scouters sign in at <span class="mono">/scout</span> and only ever see their own sheet. ' +
+      'Set an Instagram handle to have profile and reel links they DM to the company account filed onto their sheet automatically.</div>' +
       (rows
         ? '<div class="sheet-wrap"><table class="sheet"><thead><tr><th>Name</th><th>Username</th>' +
+          '<th class="col-ig">Instagram</th>' +
           '<th class="sheet-center">Rows</th><th class="sheet-center">Status</th><th class="sheet-center">Actions</th>' +
           '</tr></thead><tbody>' + rows + '</tbody></table></div>'
         : '<div class="empty-s">No scouter accounts yet.</div>') +
@@ -2180,6 +2199,97 @@
       });
   }
 
+
+  // Inbound Instagram DMs, newest first. Mostly this is a quiet audit trail —
+  // its real job is making the messages we COULDN'T place visible, since those
+  // are silent failures otherwise: a scout DMs a find, nothing appears on their
+  // sheet, and without this nobody knows why.
+  function igLogPanel() {
+    if (!state.igLogOpen) return '';
+
+    var rows = (state.igMessages || []).map(function (m) {
+      var links = []
+        .concat(m.profileLinks || [], m.reelLinks || [], m.otherLinks || [])
+        .map(function (l) {
+          return '<a href="' + esc(l) + '" target="_blank" rel="noopener noreferrer">' + esc(l) + '</a>';
+        })
+        .join('<br>');
+
+      var badge =
+        m.status === 'APPLIED'
+          ? '<span class="promoted-tag">Filed</span>'
+          : m.status === 'UNMATCHED_SENDER'
+            ? '<span class="ig-state ig-bad">Unknown sender</span>'
+            : m.status === 'NO_LINKS'
+              ? '<span class="sheet-muted">No links</span>'
+              : '<span class="ig-state ig-bad">Failed</span>';
+
+      var who = m.scout
+        ? esc(m.scout.displayName || m.scout.username)
+        : m.senderUsername
+          ? '@' + esc(m.senderUsername)
+          : '<span class="sheet-muted mono">' + esc(m.senderId) + '</span>';
+
+      // An unplaced sender gets an inline "assign to" — Instagram identifies a
+      // sender by an opaque id, so when it can't be resolved automatically this
+      // is how an admin says who it is. Assigning also re-files everything else
+      // already sitting unmatched from the same id.
+      var action =
+        m.status === 'UNMATCHED_SENDER'
+          ? '<select class="scout-select ig-assign" data-act="ig-assign" data-id="' + esc(m.id) + '">' +
+            '<option value="">Assign to…</option>' +
+            (state.scoutUsers || [])
+              .map(function (u) {
+                return '<option value="' + esc(u.id) + '">' + esc(u.displayName || u.username) + '</option>';
+              })
+              .join('') +
+            '</select>'
+          : m.statusNote
+            ? esc(m.statusNote)
+            : '';
+
+      return (
+        '<tr>' +
+        '<td class="mono" style="font-size:11px">' + esc(new Date(m.receivedAt).toLocaleString()) + '</td>' +
+        '<td>' + who + '</td>' +
+        '<td>' + (links || '<span class="sheet-muted">—</span>') + '</td>' +
+        '<td class="sheet-center">' + badge + '</td>' +
+        '<td class="sheet-center">' + (m.entry ? '#' + esc(m.entry.rowNumber) : '<span class="sheet-muted">—</span>') + '</td>' +
+        '<td class="sheet-notes">' + action + '</td>' +
+        '</tr>'
+      );
+    }).join('');
+
+    return (
+      '<div class="card-lg scout-accounts">' +
+      '<div class="card-title">Instagram inbox</div>' +
+      '<div class="scout-hint">Profile and reel links DM’d to the company Instagram account. ' +
+      'Anything marked <em>Unknown sender</em> arrived from an account not linked to a scout — ' +
+      'set that handle above and ask them to send it again.</div>' +
+      (rows
+        ? '<div class="sheet-wrap"><table class="sheet"><thead><tr>' +
+          '<th>Received</th><th>From</th><th>Links</th><th class="sheet-center">Status</th>' +
+          '<th class="sheet-center">Row</th><th class="col-ig">Note / assign</th>' +
+          '</tr></thead><tbody>' + rows + '</tbody></table></div>'
+        : '<div class="empty-s">' +
+          (state.igMessages === null ? 'Loading…' : 'Nothing received yet.') +
+          '</div>') +
+      '</div>'
+    );
+  }
+
+  function loadIgMessages() {
+    scoutApi('/integrations/instagram/messages?limit=50')
+      .then(function (rows) {
+        state.igMessages = Array.isArray(rows) ? rows : [];
+        render();
+      })
+      .catch(function () {
+        state.igMessages = [];
+        render();
+      });
+  }
+
   function scoutsView() {
     var head =
       '<div class="page-head">' +
@@ -2191,6 +2301,8 @@
       '<div class="toolbar">' + scoutSummaryChips() +
       '<button class="link-btn" data-act="scout-accounts">' +
       (state.scoutAccountsOpen ? 'Hide accounts' : 'Manage scouters') + '</button>' +
+      '<button class="link-btn" data-act="ig-log">' +
+      (state.igLogOpen ? 'Hide Instagram inbox' : 'Instagram inbox') + '</button>' +
       '</div></div>';
 
     var toolbar =
@@ -2227,7 +2339,7 @@
       // click and notes save, and restarting the entrance animation each time
       // makes the whole table flash.
       '<div class="app">' + topbar() +
-      '<div class="page list">' + head + scoutAccountsPanel() + toolbar + body + '</div></div>' +
+      '<div class="page list">' + head + scoutAccountsPanel() + igLogPanel() + toolbar + body + '</div></div>' +
       promoteModal()
     );
   }
@@ -2262,6 +2374,18 @@
       state.scoutAccountError = '';
       render();
       if (state.scoutAccountsOpen) loadScoutUsers();
+      return;
+    }
+
+    var igLog = e.target.closest('[data-act="ig-log"]');
+    if (igLog) {
+      state.igLogOpen = !state.igLogOpen;
+      render();
+      if (state.igLogOpen) {
+        loadIgMessages();
+        // The assign dropdown lists scouts, so make sure we have them.
+        if (state.scoutUsers === null) loadScoutUsers();
+      }
       return;
     }
 
@@ -2344,6 +2468,49 @@
     var srch = e.target.closest('[data-act="scout-search"]');
     if (srch) { state.scoutSearch = srch.value; loadScouts(); return; }
 
+    var igAssign = e.target.closest('[data-act="ig-assign"]');
+    if (igAssign) {
+      var scoutId = igAssign.value;
+      if (!scoutId) return;
+      igAssign.disabled = true;
+      scoutApi('/integrations/instagram/messages/' + encodeURIComponent(igAssign.getAttribute('data-id')) + '/assign', {
+        method: 'POST',
+        body: { scoutId: scoutId }
+      })
+        .then(function (res) {
+          loadIgMessages();
+          loadScoutUsers();
+          loadScouts();
+          if (res && res.reprocessed > 1) {
+            window.alert('Linked. Re-filed ' + res.filed + ' of ' + res.reprocessed + ' waiting messages.');
+          }
+        })
+        .catch(function (err) {
+          igAssign.disabled = false;
+          if (err.message !== 'unauthorized') window.alert(err.message);
+        });
+      return;
+    }
+
+    var igField = e.target.closest('[data-act="scout-ig"]');
+    if (igField) {
+      igField.classList.add('saving');
+      scoutApi('/users/' + encodeURIComponent(igField.getAttribute('data-id')), {
+        method: 'PATCH',
+        body: { instagramHandle: igField.value.trim() }
+      })
+        .then(function () {
+          igField.classList.remove('saving');
+          loadScoutUsers();
+        })
+        .catch(function (err) {
+          igField.classList.remove('saving');
+          if (err.message !== 'unauthorized') window.alert(err.message);
+          loadScoutUsers();
+        });
+      return;
+    }
+
     var notes = e.target.closest('[data-act="scout-notes"]');
     if (notes) {
       var nid = notes.getAttribute('data-id');
@@ -2374,9 +2541,11 @@
     var body = {
       displayName: form.displayName.value.trim(),
       username: form.username.value.trim().toLowerCase(),
-      password: form.password.value
+      password: form.password.value,
+      instagramHandle: form.instagramHandle.value.trim()
     };
     if (!body.displayName) delete body.displayName;
+    if (!body.instagramHandle) delete body.instagramHandle;
     state.scoutCreating = true;
     state.scoutAccountError = '';
     render();

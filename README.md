@@ -55,6 +55,30 @@ same `upsertFromSource` merge path as every other source (activity source
 instead of duplicating it. Scouting a profile that already exists warns the
 scouter but still saves, since they can't see the sheet it collides with.
 
+**Instagram DM scouting.** Scouts can send finds straight from Instagram instead
+of typing them. They DM a creator's **profile link** and the **reel** that creator
+could remake with the brand in it to the company Instagram account, and both land
+on one row of that scout's sheet. Order doesn't matter: a profile creates the row
+(or completes a row already waiting on one), and a reel completes the newest row
+that has a profile but no reel — or starts a row with a blank profile until one
+arrives. Pairing only looks at rows created inside `INSTAGRAM_PAIR_WINDOW_HOURS`
+(default 24), so an abandoned half-row can't capture an unrelated link days later,
+and a blank row added by hand is never hijacked.
+
+Setup needs an Instagram **professional** account (Business or Creator — a personal
+account cannot receive the messaging webhook) on a Meta app with
+`instagram_business_basic` and `instagram_business_manage_messages`, with the
+webhook pointed at `POST /integrations/instagram/webhook`. Every delivery must
+carry a valid `X-Hub-Signature-256` for `INSTAGRAM_APP_SECRET`; without that
+secret configured the endpoint refuses everything, since an open webhook would let
+anyone write onto a scout's sheet. Meta identifies a sender by an opaque
+Instagram-scoped id rather than a username, so each scout's Instagram handle is set
+by an admin under **Scouts → Manage scouters**; the id is cached on first match.
+When a sender can't be resolved the message is still recorded and shown under
+**Scouts → Instagram inbox**, where an admin assigns it to a scout — which also
+re-files everything else waiting from that sender. Nothing is ever silently
+dropped, and redelivered webhooks are ignored by message id rather than filed twice.
+
 **Maintenance.** To clear placeholder data before the first real import, call
 `POST /maintenance/purge-demo` (guarded by `x-api-key`) — it deletes only the
 demo/seed markers (the `prisma/seed.ts` creator + any `@example.com` address)

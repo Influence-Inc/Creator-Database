@@ -16,4 +16,10 @@ export class UpdateUserDto {
   @MinLength(8)
   @MaxLength(200)
   password?: string;
+
+  /** Empty string clears the Instagram link. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  instagramHandle?: string;
 }
