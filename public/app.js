@@ -47,6 +47,11 @@
     scoutFilterQual: '',
     scoutSearch: '',
     scoutBusyId: null,
+    // Promote-to-Creator-DB confirmation. Holds the scouting row awaiting
+    // confirmation, or null when the dialog is closed.
+    promoteEntry: null,
+    promoting: false,
+    promoteError: null,
     scoutAccountsOpen: false,
     newScoutName: '',
     newScoutUser: '',
@@ -2080,6 +2085,101 @@
     );
   }
 
+
+  /**
+   * Confirmation before a scouted row is pushed into the Creator Database.
+   * Promotion writes to the master creator record, so it gets the same
+   * deliberate dialog as the other consequential actions rather than firing on
+   * a single click.
+   */
+  function promoteModal() {
+    var e = state.promoteEntry;
+    if (!e) return '';
+
+    var scout = e.scout ? e.scout.displayName || e.scout.username : 'a scout';
+    var err = state.promoteError
+      ? '<div class="save-err" role="alert">' + esc(state.promoteError) + '</div>'
+      : '';
+
+    // A creator is matched into the database by Instagram handle. Without one
+    // there is nothing to match on, and the server rejects the promotion — so
+    // say that here rather than letting the confirm fail after the fact.
+    if (!e.instagramUsername) {
+      return (
+        '<div class="modal-overlay" data-act="promote-backdrop">' +
+        '<div class="modal promote-modal" role="dialog" aria-labelledby="promote-title" aria-modal="true">' +
+        '<div class="modal-head">' +
+        '<div id="promote-title" style="font-size:16px;font-weight:700">Can\'t add this row yet</div>' +
+        '<button class="modal-x" data-act="promote-cancel" aria-label="Close">✕</button>' +
+        '</div>' +
+        '<div class="modal-body">' +
+        '<p class="promote-lead">This row has no readable Instagram handle, and that is what a ' +
+        'creator record is matched on — without it there is no way to tell whether they are ' +
+        'already in the database.</p>' +
+        '<p class="promote-lead" style="color:var(--text-muted)">Ask ' + esc(scout) +
+        ' to correct the Instagram profile link on their sheet, then add them here.</p>' +
+        '<div class="promote-actions">' +
+        '<button class="btn-accent" data-act="promote-cancel">Close</button>' +
+        '</div>' +
+        '</div></div></div>'
+      );
+    }
+
+    var who = '@' + e.instagramUsername;
+
+    return (
+      '<div class="modal-overlay" data-act="promote-backdrop">' +
+      '<div class="modal promote-modal" role="dialog" aria-labelledby="promote-title" aria-modal="true">' +
+      '<div class="modal-head">' +
+      '<div id="promote-title" style="font-size:16px;font-weight:700">Add to Creator Database?</div>' +
+      '<button class="modal-x" data-act="promote-cancel" aria-label="Close"' +
+      (state.promoting ? ' disabled' : '') + '>✕</button>' +
+      '</div>' +
+      '<div class="modal-body">' +
+      '<p class="promote-lead"><strong>' + esc(who) + '</strong>, scouted by ' +
+      esc(scout) + ', will be added to the Creator Database.</p>' +
+      '<ul class="promote-points">' +
+      '<li>They become a creator you can run campaigns and contracts against.</li>' +
+      '<li>If they are already in the database, their existing record is updated — ' +
+      'never duplicated.</li>' +
+      '<li>' + esc(scout) + ' is credited as the manager who found them.</li>' +
+      '</ul>' +
+      err +
+      '<div class="promote-actions">' +
+      '<button class="linklike" data-act="promote-cancel"' +
+      (state.promoting ? ' disabled' : '') + '>Cancel</button>' +
+      '<button class="btn-accent" data-act="promote-confirm"' +
+      (state.promoting ? ' disabled' : '') + '>' +
+      (state.promoting ? 'Adding…' : 'Add to Creator Database') +
+      '</button>' +
+      '</div>' +
+      '</div></div></div>'
+    );
+  }
+
+  function closePromote() {
+    if (state.promoting) return;
+    setState({ promoteEntry: null, promoteError: null });
+  }
+
+  function confirmPromote() {
+    var entry = state.promoteEntry;
+    if (!entry || state.promoting) return;
+    setState({ promoting: true, promoteError: null });
+    scoutApi('/scouts/entries/' + encodeURIComponent(entry.id) + '/promote', { method: 'POST' })
+      .then(function (res) {
+        state.promoting = false;
+        state.promoteEntry = null;
+        state.promoteError = null;
+        refreshScoutRow(res.entry);
+      })
+      .catch(function (err) {
+        if (err.message === 'unauthorized') return;
+        // Keep the dialog open so the reason is readable and it can be retried.
+        setState({ promoting: false, promoteError: err.message });
+      });
+  }
+
   function scoutsView() {
     var head =
       '<div class="page-head">' +
@@ -2127,7 +2227,8 @@
       // click and notes save, and restarting the entrance animation each time
       // makes the whole table flash.
       '<div class="app">' + topbar() +
-      '<div class="page list">' + head + scoutAccountsPanel() + toolbar + body + '</div></div>'
+      '<div class="page list">' + head + scoutAccountsPanel() + toolbar + body + '</div></div>' +
+      promoteModal()
     );
   }
 
@@ -2186,19 +2287,19 @@
     var promote = e.target.closest('[data-act="scout-promote"]');
     if (promote) {
       var pid = promote.getAttribute('data-id');
-      state.scoutBusyId = pid;
-      render();
-      scoutApi('/scouts/entries/' + encodeURIComponent(pid) + '/promote', { method: 'POST' })
-        .then(function (res) {
-          state.scoutBusyId = null;
-          refreshScoutRow(res.entry);
-        })
-        .catch(function (err) {
-          state.scoutBusyId = null;
-          render();
-          if (err.message !== 'unauthorized') window.alert(err.message);
-        });
+      var row = (state.scoutEntries || []).filter(function (r) { return r.id === pid; })[0];
+      if (!row) return;
+      // Confirm first — promotion writes to the master creator record.
+      setState({ promoteEntry: row, promoteError: null });
       return;
+    }
+    if (e.target.closest('[data-act="promote-cancel"]')) return closePromote();
+    if (e.target.closest('[data-act="promote-confirm"]')) return confirmPromote();
+    var pbd = e.target.closest('[data-act="promote-backdrop"]');
+    if (pbd) {
+      // Only when the click landed on the backdrop itself, not the dialog.
+      if (e.target.closest('.modal')) return;
+      return closePromote();
     }
 
     var toggle = e.target.closest('[data-act="scout-toggle"]');
@@ -2345,7 +2446,8 @@
     if (
       e.target.classList &&
       e.target.classList.contains('modal-overlay') &&
-      e.target.getAttribute('data-act') !== 'delete-backdrop'
+      e.target.getAttribute('data-act') !== 'delete-backdrop' &&
+      e.target.getAttribute('data-act') !== 'promote-backdrop'
     ) {
       return setState({ modalContractId: null });
     }
@@ -2505,6 +2607,10 @@
       if (state.deleteOpen) {
         if (state.deleting) return;
         return setState({ deleteOpen: false, deleteConfirmText: '', deleteError: null });
+      }
+      if (state.promoteEntry) {
+        if (state.promoting) return;
+        return setState({ promoteEntry: null, promoteError: null });
       }
       if (state.modalContractId !== null) return setState({ modalContractId: null });
     }
