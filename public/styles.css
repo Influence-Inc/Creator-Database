@@ -891,7 +891,12 @@ button {
   position: fixed;
   inset: 0;
   z-index: 100;
-  background: rgba(0, 0, 0, 0.55);
+  /* Blur the page behind the dialog so the decision in front reads as the only
+     thing in play. The solid tint stays as the fallback for browsers without
+     backdrop-filter, which would otherwise show an unreadable sharp page. */
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(6px) saturate(0.9);
+  -webkit-backdrop-filter: blur(6px) saturate(0.9);
   display: flex;
   align-items: flex-start;
   justify-content: center;
@@ -2104,4 +2109,38 @@ table.sheet tbody tr:hover td.sheet-ro {
 /* Chromium renders its own datalist arrow on top of ours; hide it. */
 .sheet-input[list]::-webkit-calendar-picker-indicator {
   display: none !important;
+}
+
+/* --- Promote-to-Creator-Database confirmation ---------------------------- */
+
+.promote-modal {
+  max-width: 460px;
+}
+
+.promote-lead {
+  margin: 0 0 14px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.promote-points {
+  margin: 0;
+  padding: 0 0 0 18px;
+  list-style: disc;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.promote-points li {
+  margin-bottom: 5px;
+}
+
+.promote-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  margin-top: 22px;
 }
