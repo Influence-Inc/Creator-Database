@@ -20,4 +20,10 @@ export class CreateUserDto {
   @IsOptional()
   @IsEnum(UserRole)
   role?: UserRole;
+
+  /** Instagram handle whose DMs should land on this scout's sheet. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  instagramHandle?: string;
 }

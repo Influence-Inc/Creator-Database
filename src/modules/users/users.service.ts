@@ -18,10 +18,15 @@ export interface SafeUser {
   isActive: boolean;
   lastLoginAt: Date | null;
   createdAt: Date;
+  /** Instagram handle inbound DMs are matched against. */
+  instagramHandle: string | null;
+  /** True once we've seen a message from them and cached their Instagram id. */
+  instagramLinked: boolean;
   entryCount?: number;
 }
 
 const USERNAME_RE = /^[a-z0-9._-]{3,40}$/;
+const IG_HANDLE_RE = /^[a-z0-9._]{1,30}$/;
 const MIN_PASSWORD_LENGTH = 8;
 
 /** Strip the password hash before a user ever leaves the service. */
@@ -34,6 +39,8 @@ function toSafe(user: User & { _count?: { scoutEntries: number } }): SafeUser {
     isActive: user.isActive,
     lastLoginAt: user.lastLoginAt,
     createdAt: user.createdAt,
+    instagramHandle: user.instagramHandle,
+    instagramLinked: !!user.instagramUserId,
     ...(user._count ? { entryCount: user._count.scoutEntries } : {}),
   };
 }
@@ -61,6 +68,28 @@ export class UsersService {
       );
     }
     return username;
+  }
+
+  /**
+   * Accept an Instagram handle however it's pasted — bare, with an @, or as a
+   * full profile URL — and store the bare lowercase handle, which is what Meta
+   * reports for a message sender. Empty clears the link.
+   */
+  private normalizeHandle(raw: string | null | undefined): string | null {
+    if (raw === null || raw === undefined) return null;
+    let handle = String(raw).trim();
+    if (!handle) return null;
+
+    const url = handle.match(/instagram\.com\/([^/?#\s]+)/i);
+    if (url) handle = url[1];
+    handle = handle.replace(/^@/, '').toLowerCase();
+
+    if (!IG_HANDLE_RE.test(handle)) {
+      throw new BadRequestException(
+        'Instagram handle must be 1-30 characters: letters, numbers, dots or underscores',
+      );
+    }
+    return handle;
   }
 
   private assertPasswordStrength(password: string): void {
@@ -93,9 +122,11 @@ export class UsersService {
     password: string;
     displayName?: string;
     role?: UserRole;
+    instagramHandle?: string;
   }): Promise<SafeUser> {
     const username = this.normalizeUsername(input.username);
     this.assertPasswordStrength(input.password);
+    const instagramHandle = this.normalizeHandle(input.instagramHandle);
 
     try {
       const user = await this.prisma.user.create({
@@ -104,6 +135,7 @@ export class UsersService {
           passwordHash: hashPassword(input.password),
           displayName: input.displayName?.trim() || null,
           role: input.role ?? UserRole.SCOUT,
+          instagramHandle,
         },
       });
       this.logger.log(`Created ${user.role} account "${user.username}"`);
@@ -118,7 +150,12 @@ export class UsersService {
 
   async update(
     id: string,
-    input: { displayName?: string | null; isActive?: boolean; password?: string },
+    input: {
+      displayName?: string | null;
+      isActive?: boolean;
+      password?: string;
+      instagramHandle?: string | null;
+    },
   ): Promise<SafeUser> {
     const existing = await this.prisma.user.findUnique({ where: { id } });
     if (!existing) throw new NotFoundException('User not found');
@@ -132,9 +169,23 @@ export class UsersService {
       this.assertPasswordStrength(input.password);
       data.passwordHash = hashPassword(input.password);
     }
+    if (input.instagramHandle !== undefined) {
+      const handle = this.normalizeHandle(input.instagramHandle);
+      data.instagramHandle = handle;
+      // Re-linking to a different handle invalidates the cached Instagram id,
+      // otherwise the old account would keep writing to this scout's sheet.
+      if (handle !== existing.instagramHandle) data.instagramUserId = null;
+    }
 
-    const user = await this.prisma.user.update({ where: { id }, data });
-    return toSafe(user);
+    try {
+      const user = await this.prisma.user.update({ where: { id }, data });
+      return toSafe(user);
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        throw new ConflictException('That Instagram handle is already linked to another scout');
+      }
+      throw err;
+    }
   }
 
   /** Delete an account. Their scouting rows cascade away with them. */

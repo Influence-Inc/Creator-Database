@@ -15,6 +15,7 @@ import { ContractsModule } from './modules/contracts/contracts.module';
 import { CreatorsModule } from './modules/creators/creators.module';
 import { CreatorStatsModule } from './modules/creator-stats/creator-stats.module';
 import { EmailHistoryModule } from './modules/email-history/email-history.module';
+import { InstagramDmModule } from './integrations/instagram-dm/instagram-dm.module';
 import { HealthModule } from './modules/health/health.module';
 import { MaintenanceModule } from './modules/maintenance/maintenance.module';
 import { RosterModule } from './modules/roster/roster.module';
@@ -52,6 +53,7 @@ import { UsersModule } from './modules/users/users.module';
     RosterModule,
     UsersModule,
     ScoutsModule,
+    InstagramDmModule,
     MaintenanceModule,
     HealthModule,
   ],

@@ -35,6 +35,13 @@ export interface AppConfig {
     botToken: string;
     timeoutMs: number;
   };
+  instagramDm: {
+    verifyToken: string;
+    appSecret: string;
+    accessToken: string;
+    graphBase: string;
+    pairWindowHours: number;
+  };
   claude: {
     apiKey: string;
     model: string;
@@ -111,6 +118,19 @@ export default (): AppConfig => ({
     // Shared secret sent as `x-bot-token`; must equal influence-stats' BOT_TOKEN.
     botToken: process.env.STATS_BOT_TOKEN ?? '',
     timeoutMs: parseIntOr(process.env.STATS_TIMEOUT_MS, 20000),
+  },
+  instagramDm: {
+    // Shared with Meta when the webhook subscription is created; echoed back on
+    // their GET handshake.
+    verifyToken: process.env.INSTAGRAM_VERIFY_TOKEN ?? '',
+    // Meta app secret — every webhook POST is HMAC-signed with it. Without this
+    // the endpoint refuses traffic rather than trusting unsigned callers.
+    appSecret: process.env.INSTAGRAM_APP_SECRET ?? '',
+    // Long-lived token used only to turn a sender id into a username.
+    accessToken: process.env.INSTAGRAM_ACCESS_TOKEN ?? '',
+    graphBase: process.env.INSTAGRAM_GRAPH_BASE ?? 'https://graph.instagram.com',
+    // How long a half-filled row stays eligible to be paired with its other half.
+    pairWindowHours: parseIntOr(process.env.INSTAGRAM_PAIR_WINDOW_HOURS, 24),
   },
   claude: {
     apiKey: process.env.CLAUDE_API_KEY ?? '',
