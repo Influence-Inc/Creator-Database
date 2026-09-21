@@ -240,3 +240,87 @@ describe('InstagramDmService.ingest', () => {
     );
   });
 });
+
+describe('InstagramDmService.claimForScout', () => {
+  const SCOUT_WITH_HANDLE = { id: 'scout-1', username: 'priya', instagramHandle: 'priya.scouts' };
+
+  function claimDeps(messages: Array<Record<string, unknown>>, lookup?: string | null) {
+    const deleted: string[] = [];
+    const prisma = {
+      user: {
+        findUnique: jest.fn().mockResolvedValue(SCOUT_WITH_HANDLE),
+        findFirst: jest.fn().mockResolvedValue(SCOUT_WITH_HANDLE),
+        update: jest.fn().mockResolvedValue(SCOUT_WITH_HANDLE),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
+      instagramMessage: {
+        findMany: jest.fn().mockResolvedValue(messages),
+        findUnique: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue({ id: 'm' }),
+        delete: jest.fn((a: never) => {
+          deleted.push((a as { where: { id: string } }).where.id);
+          return Promise.resolve({});
+        }),
+      },
+      scoutEntry: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue({ id: 'e1', rowNumber: 1 }),
+        update: jest.fn().mockResolvedValue({ id: 'e1', rowNumber: 1 }),
+      },
+    } as unknown as PrismaService;
+
+    const config = { get: jest.fn().mockReturnValue(24) } as unknown as ConfigService;
+    const graph = {
+      lookupUsername: jest.fn().mockResolvedValue(lookup === undefined ? null : lookup),
+    } as unknown as InstagramGraphService;
+    return { prisma, config, graph, deleted };
+  }
+
+  const waiting = (over: Record<string, unknown> = {}) => ({
+    id: 'm1',
+    messageId: 'mid-1',
+    senderId: 'IGSID_SELF',
+    senderUsername: 'priya.scouts',
+    text: 'https://instagram.com/found',
+    raw: { message: { mid: 'mid-1', text: 'https://instagram.com/found' } },
+    ...over,
+  });
+
+  it("claims messages already tagged with the scout's handle", async () => {
+    const d = claimDeps([waiting()]);
+    const out = await new InstagramDmService(d.prisma, d.config, d.graph).claimForScout('scout-1');
+    expect(out.reprocessed).toBe(1);
+    expect(d.prisma.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ instagramUserId: 'IGSID_SELF' }) }),
+    );
+  });
+
+  it('re-resolves senders that arrived before a token was configured', async () => {
+    // senderUsername is null because there was no access token at the time.
+    const d = claimDeps([waiting({ senderUsername: null })], 'priya.scouts');
+    const out = await new InstagramDmService(d.prisma, d.config, d.graph).claimForScout('scout-1');
+    expect(d.graph.lookupUsername).toHaveBeenCalledWith('IGSID_SELF');
+    expect(out.reprocessed).toBe(1);
+  });
+
+  it("leaves a stranger's message alone when the lookup says someone else", async () => {
+    const d = claimDeps(
+      [waiting({ senderUsername: null, senderId: 'IGSID_OTHER' })],
+      'someone.else',
+    );
+    const out = await new InstagramDmService(d.prisma, d.config, d.graph).claimForScout('scout-1');
+    expect(out).toEqual({ reprocessed: 0, filed: 0 });
+    expect(d.prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('does nothing for a scout who has not set a handle', async () => {
+    const d = claimDeps([waiting()]);
+    (d.prisma.user.findUnique as jest.Mock).mockResolvedValue({
+      id: 'scout-1',
+      instagramHandle: null,
+    });
+    await expect(
+      new InstagramDmService(d.prisma, d.config, d.graph).claimForScout('scout-1'),
+    ).resolves.toEqual({ reprocessed: 0, filed: 0 });
+  });
+});

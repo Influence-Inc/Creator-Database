@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 /**
@@ -12,10 +12,21 @@ import { ConfigService } from '@nestjs/config';
  * failing closed.
  */
 @Injectable()
-export class InstagramGraphService {
+export class InstagramGraphService implements OnModuleInit {
   private readonly logger = new Logger(InstagramGraphService.name);
 
   constructor(private readonly config: ConfigService) {}
+
+  onModuleInit(): void {
+    // Scouts link their own Instagram by handle, and matching a handle to an
+    // incoming message needs this token to turn Meta's opaque sender id into a
+    // username. Without it, inbound DMs can never be placed automatically.
+    if (this.config.get<string>('instagramDm.appSecret') && !this.configured) {
+      this.logger.warn(
+        'INSTAGRAM_ACCESS_TOKEN is not set — inbound Instagram DMs cannot be matched to a scout. Set it, or messages will pile up unmatched.',
+      );
+    }
+  }
 
   get configured(): boolean {
     return !!this.config.get<string>('instagramDm.accessToken');

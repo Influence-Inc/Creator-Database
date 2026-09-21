@@ -87,6 +87,13 @@
     loggingIn: false,
     me: null,
     rows: [],
+    // The scout's own Instagram link. They set this themselves — they know
+    // their handle, so matching actually lands.
+    igHandle: null,
+    igLinked: false,
+    igEditing: false,
+    igSaving: false,
+    igError: '',
     loadError: '',
     adding: false,
     toast: null
@@ -285,7 +292,8 @@
       '<div><h1 class="page-title">Your creators</h1>' +
       '<div class="page-sub">' + state.rows.length +
         ' row' + (state.rows.length === 1 ? '' : 's') +
-        ' · only you and an admin can see this sheet</div></div>' +
+        ' · only you and an admin can see this sheet</div>' +
+      igSetting() + '</div>' +
       '<button class="btn-add" data-act="add"' + (state.adding ? ' disabled' : '') + '>' +
       (state.adding ? 'Adding…' : '+ Add row') +
       '</button>' +
@@ -447,6 +455,63 @@
 
   // ---- data ---------------------------------------------------------------
 
+
+  /**
+   * The scout's Instagram link, shown right under the sheet heading.
+   *
+   * Reads as a quiet status line once it's set, and as a prompt while it isn't
+   * — an unset handle is the one thing that stops DM'd links arriving, so it
+   * shouldn't be silent, but it also shouldn't shout at someone who's already
+   * done it.
+   */
+  function igSetting() {
+    if (state.igEditing) {
+      return (
+        '<form class="ig-row" data-act="ig-save">' +
+        '<span class="ig-label">Instagram</span>' +
+        '<input id="ig-handle" class="ig-field" value="' + esc(state.igHandle ? '@' + state.igHandle : '') +
+        '" placeholder="@yourhandle" autocomplete="off" spellcheck="false" autofocus>' +
+        '<button class="ig-btn" type="submit"' + (state.igSaving ? ' disabled' : '') + '>' +
+        (state.igSaving ? 'Saving…' : 'Save') + '</button>' +
+        '<button class="ig-btn ig-btn-quiet" type="button" data-act="ig-cancel">Cancel</button>' +
+        (state.igError ? '<span class="ig-err">' + esc(state.igError) + '</span>' : '') +
+        '</form>'
+      );
+    }
+
+    if (!state.igHandle) {
+      return (
+        '<div class="ig-row">' +
+        '<span class="ig-prompt">Add your Instagram to have links you DM filed here automatically</span>' +
+        '<button class="ig-btn" data-act="ig-edit">Add Instagram</button>' +
+        '</div>'
+      );
+    }
+
+    return (
+      '<div class="ig-row">' +
+      '<span class="ig-label">Instagram</span>' +
+      '<span class="ig-handle mono">@' + esc(state.igHandle) + '</span>' +
+      (state.igLinked
+        ? '<span class="ig-state ig-ok" title="We have received a message from this account">connected</span>'
+        : '<span class="ig-state ig-wait" title="Send a link from this account and it will connect">awaiting first DM</span>') +
+      '<button class="ig-btn ig-btn-quiet" data-act="ig-edit">Change</button>' +
+      '</div>'
+    );
+  }
+
+  function loadMe() {
+    api('/scouts/me')
+      .then(function (me) {
+        state.igHandle = me.instagramHandle || null;
+        state.igLinked = !!me.instagramLinked;
+        render();
+      })
+      .catch(function () {
+        /* not fatal — the sheet still works without the Instagram link */
+      });
+  }
+
   function loadRows() {
     return api('/scouts/entries')
       .then(function (rows) {
@@ -469,6 +534,7 @@
         state.me = { username: s.username, displayName: s.displayName };
         setState({ view: 'sheet' });
         loadRows();
+        loadMe();
         startLiveSync();
       })
       .catch(function () {
@@ -495,6 +561,13 @@
           setState({ view: 'login', me: null, rows: [], username: '', password: '' });
         });
       return;
+    }
+
+    if (e.target.closest('[data-act="ig-edit"]')) {
+      return setState({ igEditing: true, igError: '' });
+    }
+    if (e.target.closest('[data-act="ig-cancel"]')) {
+      return setState({ igEditing: false, igError: '' });
     }
 
     var add = e.target.closest('[data-act="add"]');
@@ -583,6 +656,32 @@
   });
 
   document.addEventListener('submit', function (e) {
+    var igForm = e.target.closest('[data-act="ig-save"]');
+    if (igForm) {
+      e.preventDefault();
+      if (state.igSaving) return;
+      var value = (document.getElementById('ig-handle') || {}).value || '';
+      setState({ igSaving: true, igError: '' });
+      api('/scouts/me/instagram', { method: 'PATCH', body: { instagramHandle: value.trim() } })
+        .then(function (res) {
+          state.igSaving = false;
+          state.igEditing = false;
+          state.igHandle = res.instagramHandle || null;
+          state.igLinked = !!res.instagramLinked;
+          render();
+          if (res.claimed > 0) {
+            // Links they sent before setting this have just landed.
+            toast(res.claimed + ' link' + (res.claimed === 1 ? '' : 's') + ' you already sent added to your sheet', 'info');
+            loadRows();
+          }
+        })
+        .catch(function (err) {
+          if (err.message === 'unauthenticated') return;
+          setState({ igSaving: false, igError: err.message });
+        });
+      return;
+    }
+
     var form = e.target.closest('[data-act="login"]');
     if (!form) return;
     e.preventDefault();
@@ -615,6 +714,7 @@
         state.me = { username: r.data.username, displayName: r.data.displayName };
         setState({ loggingIn: false, view: 'sheet', username: '', password: '' });
         loadRows();
+        loadMe();
         startLiveSync();
       })
       .catch(function () {
