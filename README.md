@@ -65,19 +65,28 @@ arrives. Pairing only looks at rows created inside `INSTAGRAM_PAIR_WINDOW_HOURS`
 (default 24), so an abandoned half-row can't capture an unrelated link days later,
 and a blank row added by hand is never hijacked.
 
+Each scout connects their **own** Instagram from their sheet — they know their
+handle, so the matching actually lands, and it isn't an admin's job to type it.
+Linking is retroactive: links DM'd before connecting are adopted the moment the
+handle is saved, so nothing sent early is lost. Admins see who is connected under
+**Scouts → Manage scouters**, read-only.
+
 Setup needs an Instagram **professional** account (Business or Creator — a personal
 account cannot receive the messaging webhook) on a Meta app with
 `instagram_business_basic` and `instagram_business_manage_messages`, with the
 webhook pointed at `POST /integrations/instagram/webhook`. Every delivery must
 carry a valid `X-Hub-Signature-256` for `INSTAGRAM_APP_SECRET`; without that
 secret configured the endpoint refuses everything, since an open webhook would let
-anyone write onto a scout's sheet. Meta identifies a sender by an opaque
-Instagram-scoped id rather than a username, so each scout's Instagram handle is set
-by an admin under **Scouts → Manage scouters**; the id is cached on first match.
-When a sender can't be resolved the message is still recorded and shown under
-**Scouts → Instagram inbox**, where an admin assigns it to a scout — which also
-re-files everything else waiting from that sender. Nothing is ever silently
-dropped, and redelivered webhooks are ignored by message id rather than filed twice.
+anyone write onto a scout's sheet. `INSTAGRAM_ACCESS_TOKEN` is required too: Meta
+identifies a sender by an opaque Instagram-scoped id, and that token is what turns
+it into a username to match against a scout's handle. Without it nothing can be
+placed, and the app says so on startup. The id is cached on first match so the
+lookup happens once per scout. Messages that can't be placed are still recorded
+rather than dropped, and are re-checked whenever a scout connects an account;
+redelivered webhooks are ignored by message id rather than filed twice. When
+links do arrive from an account no scout has claimed — almost always a mistyped
+handle — the Scouts page says so in a line naming the sending accounts, which is
+what makes the mistake fixable; it clears itself as those scouts connect.
 
 **Maintenance.** To clear placeholder data before the first real import, call
 `POST /maintenance/purge-demo` (guarded by `x-api-key`) — it deletes only the

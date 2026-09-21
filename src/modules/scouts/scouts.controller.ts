@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
   Param,
   Patch,
@@ -18,8 +19,11 @@ import { AuthPrincipal } from '../auth/auth.service';
 import {
   CreateScoutEntryDto,
   ReviewScoutEntryDto,
+  SetInstagramDto,
   UpdateScoutEntryDto,
 } from './dto/scout-entry.dto';
+import { InstagramDmService } from '../../integrations/instagram-dm/instagram-dm.service';
+import { UsersService } from '../users/users.service';
 import { ScoutsService } from './scouts.service';
 
 /**
@@ -42,11 +46,56 @@ import { ScoutsService } from './scouts.service';
 @UseGuards(SessionGuard)
 @Controller('scouts')
 export class ScoutsController {
-  constructor(private readonly scouts: ScoutsService) {}
+  constructor(
+    private readonly scouts: ScoutsService,
+    private readonly users: UsersService,
+    private readonly instagram: InstagramDmService,
+  ) {}
 
   private principal(req: AuthedRequest): AuthPrincipal {
     // SessionGuard always sets this before the handler runs.
     return req.principal as AuthPrincipal;
+  }
+
+  /** The signed-in scout's own profile — currently just their Instagram link. */
+  @Get('me')
+  @Roles(UserRole.SCOUT, UserRole.ADMIN)
+  async me(@Req() req: AuthedRequest) {
+    const principal = this.principal(req);
+    if (!principal.uid) {
+      // The env bootstrap admin has no user row and no sheet of their own.
+      return { instagramHandle: null, instagramLinked: false, isAccount: false };
+    }
+    const user = await this.users.findById(principal.uid);
+    return {
+      instagramHandle: user.instagramHandle,
+      instagramLinked: user.instagramLinked,
+      isAccount: true,
+    };
+  }
+
+  /**
+   * A scout tells us which Instagram account they send finds from. Doing this
+   * themselves is the point: they know their own handle, so the automatic
+   * matching actually lands. Setting it also adopts anything already waiting
+   * from that account, so links sent before this was set aren't lost.
+   */
+  @Patch('me/instagram')
+  @Roles(UserRole.SCOUT, UserRole.ADMIN)
+  async setInstagram(@Req() req: AuthedRequest, @Body() dto: SetInstagramDto) {
+    const principal = this.principal(req);
+    if (!principal.uid) {
+      throw new ForbiddenException('This account has no scouting sheet');
+    }
+    const user = await this.users.setOwnInstagramHandle(principal.uid, dto.instagramHandle ?? null);
+    const claimed = await this.instagram.claimForScout(principal.uid);
+    const fresh = await this.users.findById(principal.uid);
+    return {
+      instagramHandle: fresh.instagramHandle,
+      instagramLinked: fresh.instagramLinked,
+      claimed: claimed.filed,
+      username: user.username,
+    };
   }
 
   @Get('entries')

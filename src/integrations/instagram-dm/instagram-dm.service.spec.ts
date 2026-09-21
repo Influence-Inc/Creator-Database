@@ -240,3 +240,142 @@ describe('InstagramDmService.ingest', () => {
     );
   });
 });
+
+describe('InstagramDmService.claimForScout', () => {
+  const SCOUT_WITH_HANDLE = { id: 'scout-1', username: 'priya', instagramHandle: 'priya.scouts' };
+
+  function claimDeps(messages: Array<Record<string, unknown>>, lookup?: string | null) {
+    const deleted: string[] = [];
+    const prisma = {
+      user: {
+        findUnique: jest.fn().mockResolvedValue(SCOUT_WITH_HANDLE),
+        findFirst: jest.fn().mockResolvedValue(SCOUT_WITH_HANDLE),
+        update: jest.fn().mockResolvedValue(SCOUT_WITH_HANDLE),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
+      instagramMessage: {
+        findMany: jest.fn().mockResolvedValue(messages),
+        findUnique: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue({ id: 'm' }),
+        delete: jest.fn((a: never) => {
+          deleted.push((a as { where: { id: string } }).where.id);
+          return Promise.resolve({});
+        }),
+      },
+      scoutEntry: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue({ id: 'e1', rowNumber: 1 }),
+        update: jest.fn().mockResolvedValue({ id: 'e1', rowNumber: 1 }),
+      },
+    } as unknown as PrismaService;
+
+    const config = { get: jest.fn().mockReturnValue(24) } as unknown as ConfigService;
+    const graph = {
+      lookupUsername: jest.fn().mockResolvedValue(lookup === undefined ? null : lookup),
+    } as unknown as InstagramGraphService;
+    return { prisma, config, graph, deleted };
+  }
+
+  const waiting = (over: Record<string, unknown> = {}) => ({
+    id: 'm1',
+    messageId: 'mid-1',
+    senderId: 'IGSID_SELF',
+    senderUsername: 'priya.scouts',
+    text: 'https://instagram.com/found',
+    raw: { message: { mid: 'mid-1', text: 'https://instagram.com/found' } },
+    ...over,
+  });
+
+  it("claims messages already tagged with the scout's handle", async () => {
+    const d = claimDeps([waiting()]);
+    const out = await new InstagramDmService(d.prisma, d.config, d.graph).claimForScout('scout-1');
+    expect(out.reprocessed).toBe(1);
+    expect(d.prisma.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ instagramUserId: 'IGSID_SELF' }) }),
+    );
+  });
+
+  it('re-resolves senders that arrived before a token was configured', async () => {
+    // senderUsername is null because there was no access token at the time.
+    const d = claimDeps([waiting({ senderUsername: null })], 'priya.scouts');
+    const out = await new InstagramDmService(d.prisma, d.config, d.graph).claimForScout('scout-1');
+    expect(d.graph.lookupUsername).toHaveBeenCalledWith('IGSID_SELF');
+    expect(out.reprocessed).toBe(1);
+  });
+
+  it("leaves a stranger's message alone when the lookup says someone else", async () => {
+    const d = claimDeps(
+      [waiting({ senderUsername: null, senderId: 'IGSID_OTHER' })],
+      'someone.else',
+    );
+    const out = await new InstagramDmService(d.prisma, d.config, d.graph).claimForScout('scout-1');
+    expect(out).toEqual({ reprocessed: 0, filed: 0 });
+    expect(d.prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('does nothing for a scout who has not set a handle', async () => {
+    const d = claimDeps([waiting()]);
+    (d.prisma.user.findUnique as jest.Mock).mockResolvedValue({
+      id: 'scout-1',
+      instagramHandle: null,
+    });
+    await expect(
+      new InstagramDmService(d.prisma, d.config, d.graph).claimForScout('scout-1'),
+    ).resolves.toEqual({ reprocessed: 0, filed: 0 });
+  });
+});
+
+describe('InstagramDmService.unmatchedSummary', () => {
+  function summaryDeps(rows: Array<Record<string, unknown>>) {
+    const prisma = {
+      instagramMessage: { findMany: jest.fn().mockResolvedValue(rows) },
+    } as unknown as PrismaService;
+    const config = { get: jest.fn().mockReturnValue(24) } as unknown as ConfigService;
+    const graph = { lookupUsername: jest.fn() } as unknown as InstagramGraphService;
+    return new InstagramDmService(prisma, config, graph);
+  }
+
+  const at = (d: string) => new Date(d);
+
+  it('says nothing when everything has been filed', async () => {
+    await expect(summaryDeps([]).unmatchedSummary()).resolves.toEqual({
+      total: 0,
+      senderCount: 0,
+      senders: [],
+    });
+  });
+
+  it('groups by sender and counts their links, busiest first', async () => {
+    const out = await summaryDeps([
+      { senderUsername: 'priya.scouts', senderId: 'A', receivedAt: at('2026-01-02') },
+      { senderUsername: 'priya.scouts', senderId: 'A', receivedAt: at('2026-01-01') },
+      { senderUsername: 'someone.else', senderId: 'B', receivedAt: at('2026-01-03') },
+    ]).unmatchedSummary();
+
+    expect(out.total).toBe(3);
+    expect(out.senderCount).toBe(2);
+    expect(out.senders[0]).toMatchObject({ label: '@priya.scouts', count: 2 });
+    expect(out.senders[1]).toMatchObject({ label: '@someone.else', count: 1 });
+  });
+
+  it('still reports a sender whose username was never resolved', async () => {
+    const out = await summaryDeps([
+      { senderUsername: null, senderId: 'IGSID_X', receivedAt: at('2026-01-01') },
+    ]).unmatchedSummary();
+    // Opaque, but "something arrived we could not place" still needs saying.
+    expect(out.senders[0].label).toBe('an unidentified account');
+    expect(out.total).toBe(1);
+  });
+
+  it('caps how many senders it names', async () => {
+    const rows = Array.from({ length: 12 }, (_, i) => ({
+      senderUsername: `scout${i}`,
+      senderId: `S${i}`,
+      receivedAt: at('2026-01-01'),
+    }));
+    const out = await summaryDeps(rows).unmatchedSummary(3);
+    expect(out.total).toBe(12);
+    expect(out.senderCount).toBe(12);
+    expect(out.senders).toHaveLength(3);
+  });
+});

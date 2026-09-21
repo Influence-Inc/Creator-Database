@@ -85,3 +85,11 @@ export class ReviewScoutEntryDto {
   @MaxLength(4000)
   notes?: string;
 }
+
+/** Body for `PATCH /scouts/me/instagram`. An empty string clears the link. */
+export class SetInstagramDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  instagramHandle?: string;
+}

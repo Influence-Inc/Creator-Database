@@ -324,42 +324,37 @@ export class InstagramDmService {
   }
 
   /**
-   * Bind an unplaced sender to a scout and re-file everything they've already
-   * sent.
+   * Point an Instagram sender id at a scout and re-file everything of theirs
+   * that's been sitting unmatched.
    *
-   * This is the recovery path when a sender can't be resolved automatically —
-   * no access token configured, or the scout's Instagram username differs from
-   * the handle on file. An admin points one unmatched message at the right
-   * scout; the sender's Instagram id is cached on that scout, and every message
-   * already sitting unmatched from that same id is processed as if it had
-   * arrived now, so nothing has to be re-sent.
+   * Shared by both routes into this: a scout claiming their own handle, and an
+   * admin resolving a sender by hand. Messages already waiting are processed as
+   * if they'd just arrived, so nothing has to be sent again.
    */
-  async assignSender(messageId: string, scoutId: string) {
-    const message = await this.prisma.instagramMessage.findUnique({ where: { id: messageId } });
-    if (!message) throw new Error('Message not found');
-
+  private async relinkAndReprocess(
+    senderId: string,
+    scoutId: string,
+    adoptUsername?: string | null,
+  ) {
     const scout = await this.prisma.user.findUnique({ where: { id: scoutId } });
     if (!scout) throw new Error('Scout not found');
 
     // An Instagram id belongs to exactly one scout; release it from whoever
     // held it before rather than failing on the unique constraint.
     await this.prisma.user.updateMany({
-      where: { instagramUserId: message.senderId, NOT: { id: scoutId } },
+      where: { instagramUserId: senderId, NOT: { id: scoutId } },
       data: { instagramUserId: null },
     });
     await this.prisma.user.update({
       where: { id: scoutId },
       data: {
-        instagramUserId: message.senderId,
-        // Adopt the sender's username as the handle when none was on file.
-        ...(scout.instagramHandle || !message.senderUsername
-          ? {}
-          : { instagramHandle: message.senderUsername }),
+        instagramUserId: senderId,
+        ...(scout.instagramHandle || !adoptUsername ? {} : { instagramHandle: adoptUsername }),
       },
     });
 
     const pending = await this.prisma.instagramMessage.findMany({
-      where: { senderId: message.senderId, status: InstagramMessageStatus.UNMATCHED_SENDER },
+      where: { senderId, status: InstagramMessageStatus.UNMATCHED_SENDER },
       orderBy: { receivedAt: 'asc' },
     });
 
@@ -380,9 +375,67 @@ export class InstagramDmService {
     }
 
     this.logger.log(
-      `Linked Instagram sender ${message.senderId} to scout ${scout.username}; re-filed ${filed} message(s)`,
+      `Linked Instagram sender ${senderId} to scout ${scout.username}; re-filed ${filed} message(s)`,
     );
     return { linked: true as const, scoutId, reprocessed: pending.length, filed };
+  }
+
+  /** Admin path: resolve one unplaced message to a scout. */
+  async assignSender(messageId: string, scoutId: string) {
+    const message = await this.prisma.instagramMessage.findUnique({ where: { id: messageId } });
+    if (!message) throw new Error('Message not found');
+    return this.relinkAndReprocess(message.senderId, scoutId, message.senderUsername);
+  }
+
+  /**
+   * Self-service path: a scout has just told us their Instagram handle, so
+   * adopt anything already waiting from that username.
+   *
+   * This is what makes setting your own handle retroactive — send links first,
+   * set the handle afterwards, and the links still land on your sheet without
+   * anyone having to intervene.
+   */
+  async claimForScout(scoutId: string): Promise<{ reprocessed: number; filed: number }> {
+    const scout = await this.prisma.user.findUnique({ where: { id: scoutId } });
+    if (!scout?.instagramHandle) return { reprocessed: 0, filed: 0 };
+
+    const handle = scout.instagramHandle;
+    const waiting = await this.prisma.instagramMessage.findMany({
+      where: {
+        status: InstagramMessageStatus.UNMATCHED_SENDER,
+        // Either we already know who sent it, or we never managed to resolve
+        // them — those are re-checked below rather than written off.
+        OR: [{ senderUsername: handle }, { senderUsername: null }],
+      },
+      orderBy: { receivedAt: 'asc' },
+    });
+    if (waiting.length === 0) return { reprocessed: 0, filed: 0 };
+
+    const senderIds = new Set<string>();
+    const unresolved = new Set<string>();
+    for (const message of waiting) {
+      if (message.senderUsername === handle) senderIds.add(message.senderId);
+      else unresolved.add(message.senderId);
+    }
+
+    // Messages that arrived before an access token was configured have no
+    // username on them. Try once more now — otherwise a scout who links their
+    // account after the fact would silently never see those links.
+    for (const senderId of unresolved) {
+      if (senderIds.has(senderId)) continue;
+      const username = await this.graph.lookupUsername(senderId);
+      if (username && username === handle) senderIds.add(senderId);
+    }
+
+    if (senderIds.size === 0) return { reprocessed: 0, filed: 0 };
+    let reprocessed = 0;
+    let filed = 0;
+    for (const senderId of senderIds) {
+      const result = await this.relinkAndReprocess(senderId, scoutId, handle);
+      reprocessed += result.reprocessed;
+      filed += result.filed;
+    }
+    return { reprocessed, filed };
   }
 
   /**
@@ -407,6 +460,48 @@ export class InstagramDmService {
       `Erased Instagram data for sender ${senderId}: ${messages.count} message(s), ${scouts.count} account link(s)`,
     );
     return { messagesDeleted: messages.count, scoutsUnlinked: scouts.count };
+  }
+
+  /**
+   * A count of links that arrived from accounts nobody has claimed.
+   *
+   * This exists because of one failure mode: a scout mistypes their handle,
+   * their DMs arrive, match nothing, and nobody finds out — they just see
+   * "awaiting first DM" forever without knowing why. Surfacing the sending
+   * usernames makes the mistake obvious at a glance without putting a whole
+   * triage panel back.
+   */
+  async unmatchedSummary(limit = 8) {
+    const rows = await this.prisma.instagramMessage.findMany({
+      where: { status: InstagramMessageStatus.UNMATCHED_SENDER },
+      select: { senderUsername: true, senderId: true, receivedAt: true },
+      orderBy: { receivedAt: 'desc' },
+      take: 500,
+    });
+
+    const bySender = new Map<string, { label: string; count: number; lastAt: Date }>();
+    for (const row of rows) {
+      // Fall back to the raw id when the username was never resolved — it's
+      // opaque, but "something arrived we couldn't place" still needs saying.
+      const key = row.senderUsername ?? `id:${row.senderId}`;
+      const existing = bySender.get(key);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        bySender.set(key, {
+          label: row.senderUsername ? `@${row.senderUsername}` : 'an unidentified account',
+          count: 1,
+          lastAt: row.receivedAt,
+        });
+      }
+    }
+
+    const senders = Array.from(bySender.values()).sort((a, b) => b.count - a.count);
+    return {
+      total: rows.length,
+      senderCount: senders.length,
+      senders: senders.slice(0, Math.max(1, limit)),
+    };
   }
 
   /** Recent inbound messages for the admin log. */

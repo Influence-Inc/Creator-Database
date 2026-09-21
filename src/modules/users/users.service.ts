@@ -71,11 +71,14 @@ export class UsersService {
   }
 
   /**
+   * Public so a scout setting their own handle goes through exactly the same
+   * validation as an admin setting it for them.
+   *
    * Accept an Instagram handle however it's pasted — bare, with an @, or as a
    * full profile URL — and store the bare lowercase handle, which is what Meta
    * reports for a message sender. Empty clears the link.
    */
-  private normalizeHandle(raw: string | null | undefined): string | null {
+  normalizeHandle(raw: string | null | undefined): string | null {
     if (raw === null || raw === undefined) return null;
     let handle = String(raw).trim();
     if (!handle) return null;
@@ -212,6 +215,35 @@ export class UsersService {
     if (!user || !user.isActive) return null;
     if (!verifyPassword(password ?? '', user.passwordHash)) return null;
     return user;
+  }
+
+  /**
+   * A scout setting their own Instagram handle. Deliberately narrower than
+   * `update`: it can only touch the handle, on their own account, so exposing
+   * it to the SCOUT role can't become a way to rename or re-password anyone.
+   */
+  async setOwnInstagramHandle(userId: string, raw: string | null): Promise<SafeUser> {
+    const existing = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!existing) throw new NotFoundException('User not found');
+
+    const handle = this.normalizeHandle(raw);
+    try {
+      const user = await this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          instagramHandle: handle,
+          // A different handle invalidates the cached Instagram id, otherwise
+          // the previous account would keep writing to this sheet.
+          ...(handle === existing.instagramHandle ? {} : { instagramUserId: null }),
+        },
+      });
+      return toSafe(user);
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        throw new ConflictException('That Instagram account is already linked to another scout');
+      }
+      throw err;
+    }
   }
 
   async recordLogin(id: string): Promise<void> {
