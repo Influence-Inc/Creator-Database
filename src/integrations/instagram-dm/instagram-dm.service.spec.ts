@@ -324,3 +324,58 @@ describe('InstagramDmService.claimForScout', () => {
     ).resolves.toEqual({ reprocessed: 0, filed: 0 });
   });
 });
+
+describe('InstagramDmService.unmatchedSummary', () => {
+  function summaryDeps(rows: Array<Record<string, unknown>>) {
+    const prisma = {
+      instagramMessage: { findMany: jest.fn().mockResolvedValue(rows) },
+    } as unknown as PrismaService;
+    const config = { get: jest.fn().mockReturnValue(24) } as unknown as ConfigService;
+    const graph = { lookupUsername: jest.fn() } as unknown as InstagramGraphService;
+    return new InstagramDmService(prisma, config, graph);
+  }
+
+  const at = (d: string) => new Date(d);
+
+  it('says nothing when everything has been filed', async () => {
+    await expect(summaryDeps([]).unmatchedSummary()).resolves.toEqual({
+      total: 0,
+      senderCount: 0,
+      senders: [],
+    });
+  });
+
+  it('groups by sender and counts their links, busiest first', async () => {
+    const out = await summaryDeps([
+      { senderUsername: 'priya.scouts', senderId: 'A', receivedAt: at('2026-01-02') },
+      { senderUsername: 'priya.scouts', senderId: 'A', receivedAt: at('2026-01-01') },
+      { senderUsername: 'someone.else', senderId: 'B', receivedAt: at('2026-01-03') },
+    ]).unmatchedSummary();
+
+    expect(out.total).toBe(3);
+    expect(out.senderCount).toBe(2);
+    expect(out.senders[0]).toMatchObject({ label: '@priya.scouts', count: 2 });
+    expect(out.senders[1]).toMatchObject({ label: '@someone.else', count: 1 });
+  });
+
+  it('still reports a sender whose username was never resolved', async () => {
+    const out = await summaryDeps([
+      { senderUsername: null, senderId: 'IGSID_X', receivedAt: at('2026-01-01') },
+    ]).unmatchedSummary();
+    // Opaque, but "something arrived we could not place" still needs saying.
+    expect(out.senders[0].label).toBe('an unidentified account');
+    expect(out.total).toBe(1);
+  });
+
+  it('caps how many senders it names', async () => {
+    const rows = Array.from({ length: 12 }, (_, i) => ({
+      senderUsername: `scout${i}`,
+      senderId: `S${i}`,
+      receivedAt: at('2026-01-01'),
+    }));
+    const out = await summaryDeps(rows).unmatchedSummary(3);
+    expect(out.total).toBe(12);
+    expect(out.senderCount).toBe(12);
+    expect(out.senders).toHaveLength(3);
+  });
+});

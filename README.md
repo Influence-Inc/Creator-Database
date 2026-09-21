@@ -83,7 +83,10 @@ it into a username to match against a scout's handle. Without it nothing can be
 placed, and the app says so on startup. The id is cached on first match so the
 lookup happens once per scout. Messages that can't be placed are still recorded
 rather than dropped, and are re-checked whenever a scout connects an account;
-redelivered webhooks are ignored by message id rather than filed twice.
+redelivered webhooks are ignored by message id rather than filed twice. When
+links do arrive from an account no scout has claimed — almost always a mistyped
+handle — the Scouts page says so in a line naming the sending accounts, which is
+what makes the mistake fixable; it clears itself as those scouts connect.
 
 **Maintenance.** To clear placeholder data before the first real import, call
 `POST /maintenance/purge-demo` (guarded by `x-api-key`) — it deletes only the

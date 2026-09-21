@@ -2282,3 +2282,30 @@ table.sheet tbody tr:hover td.sheet-ro {
   color: var(--risk-high-fg);
   font-size: 12px;
 }
+
+/* One-line notice: Instagram links that arrived from an unconnected account.
+   Deliberately a line of text rather than a panel — it needs to be noticed,
+   not managed. */
+.ig-unmatched {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 0 0 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--st-review-fg);
+  border-radius: 9px;
+  background: var(--surface);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.ig-unmatched-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--st-review-fg);
+}

@@ -462,6 +462,49 @@ export class InstagramDmService {
     return { messagesDeleted: messages.count, scoutsUnlinked: scouts.count };
   }
 
+
+  /**
+   * A count of links that arrived from accounts nobody has claimed.
+   *
+   * This exists because of one failure mode: a scout mistypes their handle,
+   * their DMs arrive, match nothing, and nobody finds out — they just see
+   * "awaiting first DM" forever without knowing why. Surfacing the sending
+   * usernames makes the mistake obvious at a glance without putting a whole
+   * triage panel back.
+   */
+  async unmatchedSummary(limit = 8) {
+    const rows = await this.prisma.instagramMessage.findMany({
+      where: { status: InstagramMessageStatus.UNMATCHED_SENDER },
+      select: { senderUsername: true, senderId: true, receivedAt: true },
+      orderBy: { receivedAt: 'desc' },
+      take: 500,
+    });
+
+    const bySender = new Map<string, { label: string; count: number; lastAt: Date }>();
+    for (const row of rows) {
+      // Fall back to the raw id when the username was never resolved — it's
+      // opaque, but "something arrived we couldn't place" still needs saying.
+      const key = row.senderUsername ?? `id:${row.senderId}`;
+      const existing = bySender.get(key);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        bySender.set(key, {
+          label: row.senderUsername ? `@${row.senderUsername}` : 'an unidentified account',
+          count: 1,
+          lastAt: row.receivedAt,
+        });
+      }
+    }
+
+    const senders = Array.from(bySender.values()).sort((a, b) => b.count - a.count);
+    return {
+      total: rows.length,
+      senderCount: senders.length,
+      senders: senders.slice(0, Math.max(1, limit)),
+    };
+  }
+
   /** Recent inbound messages for the admin log. */
   async recent(limit = 50, status?: InstagramMessageStatus) {
     return this.prisma.instagramMessage.findMany({

@@ -105,6 +105,15 @@ export class InstagramDmController {
     return { received: true, messages: messages.length, applied };
   }
 
+  /** How many links arrived from accounts not linked to any scout. */
+  @Public()
+  @UseGuards(SessionGuard)
+  @Roles(UserRole.ADMIN)
+  @Get('unmatched')
+  unmatched() {
+    return this.dm.unmatchedSummary();
+  }
+
   /** Recent inbound messages, including ones we couldn't place. */
   @Public()
   @UseGuards(SessionGuard)

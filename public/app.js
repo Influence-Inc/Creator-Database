@@ -53,6 +53,8 @@
     promoting: false,
     promoteError: null,
     scoutAccountsOpen: false,
+    // Links that arrived from Instagram accounts no scout has claimed.
+    igUnmatched: null,
     newScoutName: '',
     newScoutUser: '',
     newScoutPass: '',
@@ -1955,6 +1957,7 @@
     scoutApi('/scouts/summary')
       .then(function (sum) { state.scoutSummary = sum; render(); })
       .catch(function () {});
+    loadIgUnmatched();
     if (state.scoutUsers === null) loadScoutUsers();
   }
 
@@ -2195,6 +2198,46 @@
   }
 
 
+
+  /**
+   * One line, only when there's something to say: links arrived from an
+   * Instagram account that isn't connected to any scout.
+   *
+   * Almost always a mistyped handle. Naming the sending account is what makes
+   * that fixable — the scout can compare it to what they entered on their sheet.
+   */
+  function igUnmatchedNotice() {
+    var data = state.igUnmatched;
+    if (!data || !data.total) return '';
+
+    var names = (data.senders || []).map(function (s) { return s.label; });
+    var shown = names.slice(0, 3).join(', ');
+    var rest = names.length - 3;
+    var from = shown + (rest > 0 ? ' and ' + rest + ' other' + (rest === 1 ? '' : 's') : '');
+
+    return (
+      '<div class="ig-unmatched">' +
+      '<span class="ig-unmatched-dot"></span>' +
+      '<span>' + esc(data.total) + ' link' + (data.total === 1 ? '' : 's') +
+      ' from ' + esc(from) + ' ' + (data.total === 1 ? "hasn't" : "haven't") +
+      ' been filed — ' + (names.length === 1 ? 'that account is' : 'those accounts are') +
+      ' not connected to a scouter. Ask them to add their Instagram on their own sheet.' +
+      '</span>' +
+      '</div>'
+    );
+  }
+
+  function loadIgUnmatched() {
+    scoutApi('/integrations/instagram/unmatched')
+      .then(function (data) {
+        state.igUnmatched = data;
+        render();
+      })
+      .catch(function () {
+        // Purely informational — a failure here shouldn't disturb the page.
+      });
+  }
+
   function scoutsView() {
     var head =
       '<div class="page-head">' +
@@ -2242,7 +2285,7 @@
       // click and notes save, and restarting the entrance animation each time
       // makes the whole table flash.
       '<div class="app">' + topbar() +
-      '<div class="page list">' + head + scoutAccountsPanel() + toolbar + body + '</div></div>' +
+      '<div class="page list">' + head + igUnmatchedNotice() + scoutAccountsPanel() + toolbar + body + '</div></div>' +
       promoteModal()
     );
   }
