@@ -462,7 +462,6 @@ export class InstagramDmService {
     return { messagesDeleted: messages.count, scoutsUnlinked: scouts.count };
   }
 
-
   /**
    * A count of links that arrived from accounts nobody has claimed.
    *
