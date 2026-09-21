@@ -41,6 +41,7 @@ export interface AppConfig {
     accessToken: string;
     graphBase: string;
     pairWindowHours: number;
+    publicBaseUrl: string;
   };
   claude: {
     apiKey: string;
@@ -131,6 +132,12 @@ export default (): AppConfig => ({
     graphBase: process.env.INSTAGRAM_GRAPH_BASE ?? 'https://graph.instagram.com',
     // How long a half-filled row stays eligible to be paired with its other half.
     pairWindowHours: parseIntOr(process.env.INSTAGRAM_PAIR_WINDOW_HOURS, 24),
+    // Absolute origin of this deployment, used to build the data-deletion
+    // status URL Meta shows to the person who asked to be forgotten.
+    publicBaseUrl: (
+      process.env.PUBLIC_BASE_URL ??
+      (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : '')
+    ).replace(/\/$/, ''),
   },
   claude: {
     apiKey: process.env.CLAUDE_API_KEY ?? '',

@@ -385,6 +385,30 @@ export class InstagramDmService {
     return { linked: true as const, scoutId, reprocessed: pending.length, filed };
   }
 
+  /**
+   * Forget everything tied to one Instagram sender.
+   *
+   * Backs both Meta callbacks: deauthorize (someone removed the app) and data
+   * deletion (someone asked for their data to be erased). The scouting rows
+   * themselves are the company's own records and stay; what goes is the link to
+   * the Instagram person — their messages, their username and the cached id.
+   */
+  async forgetSender(
+    senderId: string,
+  ): Promise<{ messagesDeleted: number; scoutsUnlinked: number }> {
+    const [messages, scouts] = await this.prisma.$transaction([
+      this.prisma.instagramMessage.deleteMany({ where: { senderId } }),
+      this.prisma.user.updateMany({
+        where: { instagramUserId: senderId },
+        data: { instagramUserId: null },
+      }),
+    ]);
+    this.logger.log(
+      `Erased Instagram data for sender ${senderId}: ${messages.count} message(s), ${scouts.count} account link(s)`,
+    );
+    return { messagesDeleted: messages.count, scoutsUnlinked: scouts.count };
+  }
+
   /** Recent inbound messages for the admin log. */
   async recent(limit = 50, status?: InstagramMessageStatus) {
     return this.prisma.instagramMessage.findMany({

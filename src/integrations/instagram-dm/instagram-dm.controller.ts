@@ -15,11 +15,12 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InstagramMessageStatus, UserRole } from '@prisma/client';
 import { Request, Response } from 'express';
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { Public } from '../../common/decorators/public.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { SessionGuard } from '../../common/guards/session.guard';
 import { InstagramDmService } from './instagram-dm.service';
+import { parseSignedRequest } from './instagram-signed-request';
 
 /** Express request carrying the untouched body bytes (see main.ts). */
 interface RawBodyRequest extends Request {
@@ -115,6 +116,77 @@ export class InstagramDmController {
     return this.dm.recent(
       Number.isFinite(parsed) ? parsed : 50,
       known.includes(status ?? '') ? (status as InstagramMessageStatus) : undefined,
+    );
+  }
+
+  /**
+   * Meta calls this when someone removes the app from their Instagram account.
+   * The payload is a `signed_request`, not a header-signed body, so it's
+   * verified with the app secret before anything is erased — otherwise anyone
+   * could post a user id and wipe that person's records.
+   */
+  @Public()
+  @Post('deauthorize')
+  async deauthorize(@Body() body: { signed_request?: string }) {
+    const payload = parseSignedRequest(
+      body?.signed_request,
+      this.config.get<string>('instagramDm.appSecret') ?? '',
+    );
+    if (!payload?.user_id) {
+      this.logger.warn('Rejected an Instagram deauthorize callback with an invalid signed_request');
+      throw new ForbiddenException('Invalid signed_request');
+    }
+    await this.dm.forgetSender(String(payload.user_id));
+    return { success: true };
+  }
+
+  /**
+   * Meta's data-deletion callback. Erases what we hold for that Instagram user
+   * and answers in the shape Meta requires — a status URL plus a confirmation
+   * code it can quote back to the person who asked.
+   */
+  @Public()
+  @Post('data-deletion')
+  async dataDeletion(@Body() body: { signed_request?: string }) {
+    const payload = parseSignedRequest(
+      body?.signed_request,
+      this.config.get<string>('instagramDm.appSecret') ?? '',
+    );
+    if (!payload?.user_id) {
+      this.logger.warn(
+        'Rejected an Instagram data-deletion callback with an invalid signed_request',
+      );
+      throw new ForbiddenException('Invalid signed_request');
+    }
+
+    const userId = String(payload.user_id);
+    await this.dm.forgetSender(userId);
+
+    // Deletion happens inline, so the request is already complete by the time
+    // this returns. The code is derived from the user id rather than stored, so
+    // the status URL stays meaningful without keeping a record of the person
+    // who just asked to be forgotten.
+    const code = createHash('sha256').update(`ig-deletion:${userId}`).digest('hex').slice(0, 16);
+    const base = (this.config.get<string>('instagramDm.publicBaseUrl') ?? '').replace(/\/$/, '');
+    return {
+      url: `${base}/integrations/instagram/data-deletion/${code}`,
+      confirmation_code: code,
+    };
+  }
+
+  /** Human-readable status page for a data-deletion confirmation code. */
+  @Public()
+  @Get('data-deletion/:code')
+  deletionStatus(@Param('code') code: string, @Res() res: Response): void {
+    res.type('text/html').send(
+      '<!doctype html><meta charset="utf-8"><title>Data deletion</title>' +
+        '<body style="font-family:system-ui;max-width:32rem;margin:4rem auto;line-height:1.6">' +
+        '<h1>Data deletion complete</h1>' +
+        '<p>All Instagram data held for this request has been deleted.</p>' +
+        `<p>Confirmation code: <code>${String(code)
+          .replace(/[^a-f0-9]/gi, '')
+          .slice(0, 64)}</code></p>` +
+        '</body>',
     );
   }
 
