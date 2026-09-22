@@ -2309,3 +2309,30 @@ table.sheet tbody tr:hover td.sheet-ro {
   border-radius: 50%;
   background: var(--st-review-fg);
 }
+
+/* A failed inbox read reads as a problem, not a status. */
+.ig-unmatched-bad {
+  border-left-color: var(--risk-high-fg);
+}
+
+.ig-unmatched-bad .ig-unmatched-dot {
+  background: var(--risk-high-fg);
+}
+
+/* Sample payload shown when messages were read but none could be filed —
+   meant to be selected and copied, so it wraps rather than scrolls away. */
+.ig-sample {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow: auto;
+  color: var(--text);
+}
