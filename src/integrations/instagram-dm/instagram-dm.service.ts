@@ -504,6 +504,45 @@ export class InstagramDmService {
     };
   }
 
+  /**
+   * Whether the integration is wired up, and whether Meta has ever actually
+   * delivered anything.
+   *
+   * The failure this answers is a specific one: a scout sends links, nothing
+   * appears, and there is no way to tell from the outside whether Meta isn't
+   * calling, or is calling and being rejected, or is calling and the sender
+   * can't be placed. Those need completely different fixes.
+   */
+  async integrationStatus(configured: {
+    appSecret: boolean;
+    verifyToken: boolean;
+    accessToken: boolean;
+  }) {
+    const [total, latest, unmatched] = await Promise.all([
+      this.prisma.instagramMessage.count(),
+      this.prisma.instagramMessage.findFirst({
+        orderBy: { receivedAt: 'desc' },
+        select: { receivedAt: true, status: true, senderUsername: true },
+      }),
+      this.prisma.instagramMessage.count({
+        where: { status: InstagramMessageStatus.UNMATCHED_SENDER },
+      }),
+    ]);
+
+    return {
+      configured,
+      // A delivery has reached us at least once. If this is null and the
+      // settings above are all true, Meta simply isn't sending — the problem is
+      // in the Meta app's webhook subscription, not here.
+      everReceived: total > 0,
+      totalMessages: total,
+      unmatchedMessages: unmatched,
+      lastMessageAt: latest?.receivedAt ?? null,
+      lastMessageStatus: latest?.status ?? null,
+      lastMessageFrom: latest?.senderUsername ?? null,
+    };
+  }
+
   /** Recent inbound messages for the admin log. */
   async recent(limit = 50, status?: InstagramMessageStatus) {
     return this.prisma.instagramMessage.findMany({

@@ -379,3 +379,57 @@ describe('InstagramDmService.unmatchedSummary', () => {
     expect(out.senders).toHaveLength(3);
   });
 });
+
+describe('InstagramDmService.integrationStatus', () => {
+  function statusDeps(total: number, unmatched: number, latest: unknown) {
+    const prisma = {
+      instagramMessage: {
+        count: jest.fn().mockResolvedValueOnce(total).mockResolvedValueOnce(unmatched),
+        findFirst: jest.fn().mockResolvedValue(latest),
+      },
+    } as unknown as PrismaService;
+    const config = { get: jest.fn() } as unknown as ConfigService;
+    const graph = { lookupUsername: jest.fn() } as unknown as InstagramGraphService;
+    return new InstagramDmService(prisma, config, graph);
+  }
+
+  const allSet = { appSecret: true, verifyToken: true, accessToken: true };
+
+  it('reports that Meta has never delivered anything', async () => {
+    const out = await statusDeps(0, 0, null).integrationStatus(allSet);
+    // Configured but nothing received: the problem is Meta's subscription,
+    // not this service.
+    expect(out.everReceived).toBe(false);
+    expect(out.totalMessages).toBe(0);
+    expect(out.lastMessageAt).toBeNull();
+  });
+
+  it('reports the most recent delivery once something has arrived', async () => {
+    const at = new Date('2026-09-22T10:00:00Z');
+    const out = await statusDeps(5, 2, {
+      receivedAt: at,
+      status: 'APPLIED',
+      senderUsername: 'priya.scouts',
+    }).integrationStatus(allSet);
+
+    expect(out.everReceived).toBe(true);
+    expect(out.totalMessages).toBe(5);
+    expect(out.unmatchedMessages).toBe(2);
+    expect(out.lastMessageAt).toBe(at);
+    expect(out.lastMessageFrom).toBe('priya.scouts');
+  });
+
+  it('passes through which secrets are missing without exposing them', async () => {
+    const out = await statusDeps(0, 0, null).integrationStatus({
+      appSecret: true,
+      verifyToken: true,
+      accessToken: false,
+    });
+    expect(out.configured).toEqual({ appSecret: true, verifyToken: true, accessToken: false });
+    // Presence is reported as booleans, so a secret's value can never ride
+    // along in this response.
+    for (const value of Object.values(out.configured)) {
+      expect(typeof value).toBe('boolean');
+    }
+  });
+});
