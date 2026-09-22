@@ -55,6 +55,8 @@
     scoutAccountsOpen: false,
     // Links that arrived from Instagram accounts no scout has claimed.
     igUnmatched: null,
+    igSyncing: false,
+    igSyncResult: null,
     newScoutName: '',
     newScoutUser: '',
     newScoutPass: '',
@@ -2238,6 +2240,46 @@
       });
   }
 
+
+  /**
+   * Result of the last manual inbox read. Shown inline rather than in an alert
+   * so the counts — and, when nothing was filed, the sample payload — can
+   * actually be read and copied.
+   */
+  function igSyncNotice() {
+    var r = state.igSyncResult;
+    if (!r) return '';
+
+    if (r.ok === false) {
+      return (
+        '<div class="ig-unmatched ig-unmatched-bad">' +
+        '<span class="ig-unmatched-dot"></span>' +
+        '<span>Instagram said: <strong>' + esc(r.error || 'the read was refused') + '</strong></span>' +
+        '</div>'
+      );
+    }
+
+    var summary =
+      'Read ' + esc(r.conversations) + ' conversation' + (r.conversations === 1 ? '' : 's') +
+      ' and ' + esc(r.messagesSeen) + ' message' + (r.messagesSeen === 1 ? '' : 's') + '. ' +
+      'Filed ' + esc(r.filed) + '.' +
+      (r.alreadyKnown ? ' ' + esc(r.alreadyKnown) + ' already on file.' : '') +
+      (r.unmatched ? ' ' + esc(r.unmatched) + ' from accounts no scouter has connected.' : '');
+
+    // When messages were read but none filed, show one so its shape can be
+    // inspected instead of guessed at.
+    var sample = r.sample
+      ? '<pre class="ig-sample">' + esc(JSON.stringify(r.sample, null, 2)) + '</pre>'
+      : '';
+
+    return (
+      '<div class="ig-unmatched">' +
+      '<span class="ig-unmatched-dot"></span>' +
+      '<span>' + summary + sample + '</span>' +
+      '</div>'
+    );
+  }
+
   function scoutsView() {
     var head =
       '<div class="page-head">' +
@@ -2249,6 +2291,8 @@
       '<div class="toolbar">' + scoutSummaryChips() +
       '<button class="link-btn" data-act="scout-accounts">' +
       (state.scoutAccountsOpen ? 'Hide accounts' : 'Manage scouters') + '</button>' +
+      '<button class="link-btn" data-act="ig-sync"' + (state.igSyncing ? ' disabled' : '') + '>' +
+      (state.igSyncing ? 'Checking Instagram…' : 'Check Instagram inbox') + '</button>' +
       '</div></div>';
 
     var toolbar =
@@ -2285,7 +2329,7 @@
       // click and notes save, and restarting the entrance animation each time
       // makes the whole table flash.
       '<div class="app">' + topbar() +
-      '<div class="page list">' + head + igUnmatchedNotice() + scoutAccountsPanel() + toolbar + body + '</div></div>' +
+      '<div class="page list">' + head + igSyncNotice() + igUnmatchedNotice() + scoutAccountsPanel() + toolbar + body + '</div></div>' +
       promoteModal()
     );
   }
@@ -2311,6 +2355,26 @@
       state.selectedId = null;
       syncUrlToState();
       loadScouts();
+      return;
+    }
+
+    var igSync = e.target.closest('[data-act="ig-sync"]');
+    if (igSync) {
+      if (state.igSyncing) return;
+      setState({ igSyncing: true, igSyncResult: null });
+      scoutApi('/integrations/instagram/sync', { method: 'POST' })
+        .then(function (res) {
+          state.igSyncing = false;
+          state.igSyncResult = res;
+          render();
+          // Anything newly filed changes the rows and the unmatched count.
+          loadScouts();
+        })
+        .catch(function (err) {
+          state.igSyncing = false;
+          state.igSyncResult = { ok: false, error: err.message };
+          render();
+        });
       return;
     }
 

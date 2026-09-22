@@ -554,7 +554,7 @@ describe('InstagramDmService.syncInbox', () => {
     expect(prisma.scoutEntry.create).not.toHaveBeenCalled();
   });
 
-  it('returns a sample message when it read some but filed none', async () => {
+  it('returns a sample message when it read some but could account for none', async () => {
     // So an unfamiliar payload shape can be inspected rather than guessed at.
     const { svc } = syncDeps(
       convo([{ id: 'm1', from: { id: 'IGSID_1' }, message: 'just saying hello' }]),
@@ -562,6 +562,21 @@ describe('InstagramDmService.syncInbox', () => {
     const out = await svc.syncInbox();
     expect(out.filed).toBe(0);
     expect(out.sample).toMatchObject({ id: 'm1' });
+  });
+
+  it('does not dump a sample on a repeat run where everything is already filed', async () => {
+    const { svc, prisma } = syncDeps(
+      convo([{ id: 'm1', from: { id: 'IGSID_1' }, message: 'https://instagram.com/found' }]),
+    );
+    (prisma.instagramMessage.findUnique as jest.Mock).mockResolvedValue({
+      id: 'x',
+      status: 'APPLIED',
+      entryId: 'e1',
+    });
+    const out = await svc.syncInbox();
+    // Nothing filed, but nothing unexplained either — that's a normal re-run.
+    expect(out.alreadyKnown).toBe(1);
+    expect(out.sample).toBeUndefined();
   });
 
   it('ignores malformed entries without failing the whole run', async () => {
