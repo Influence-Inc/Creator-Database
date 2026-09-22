@@ -69,6 +69,7 @@ export class InstagramDmController {
       this.logger.warn('Rejected an Instagram webhook handshake with a bad verify token');
       throw new ForbiddenException('Verification failed');
     }
+    this.logger.log('Instagram webhook handshake verified by Meta');
     res.type('text/plain').send(challenge ?? '');
   }
 
@@ -83,10 +84,19 @@ export class InstagramDmController {
   @Public()
   @Post('webhook')
   async receive(@Req() req: RawBodyRequest, @Body() body: unknown) {
+    // Log arrival before anything can reject it. Without this, "nothing in the
+    // logs" is ambiguous — it could mean Meta never called, or that it called
+    // and was turned away silently, which are completely different problems.
+    this.logger.log('Instagram webhook delivery received');
     this.assertSignature(req);
 
     const messages = this.dm.extractMessages(body);
-    if (messages.length === 0) return { received: true, messages: 0 };
+    if (messages.length === 0) {
+      // Meta also sends read receipts, reactions and echoes here. Saying so
+      // beats silence, which reads like the delivery never happened.
+      this.logger.log('Instagram webhook delivery carried no usable messages');
+      return { received: true, messages: 0 };
+    }
 
     let applied = 0;
     for (const message of messages) {
@@ -102,7 +112,25 @@ export class InstagramDmController {
         });
       }
     }
+    this.logger.log(`Instagram webhook: ${messages.length} message(s) received, ${applied} filed`);
     return { received: true, messages: messages.length, applied };
+  }
+
+  /**
+   * Is the Instagram integration configured, and has Meta ever delivered
+   * anything? Admin-only; reports only whether each secret is present, never
+   * the values.
+   */
+  @Public()
+  @UseGuards(SessionGuard)
+  @Roles(UserRole.ADMIN)
+  @Get('status')
+  status() {
+    return this.dm.integrationStatus({
+      appSecret: !!this.config.get<string>('instagramDm.appSecret'),
+      verifyToken: !!this.config.get<string>('instagramDm.verifyToken'),
+      accessToken: !!this.config.get<string>('instagramDm.accessToken'),
+    });
   }
 
   /** How many links arrived from accounts not linked to any scout. */
@@ -224,11 +252,17 @@ export class InstagramDmController {
     const header = req.headers['x-hub-signature-256'];
     const provided = Array.isArray(header) ? header[0] : header;
     if (!provided || !provided.startsWith('sha256=')) {
+      this.logger.warn(
+        'Rejected an Instagram webhook delivery with no X-Hub-Signature-256 header — the caller was not Meta',
+      );
       throw new ForbiddenException('Missing signature');
     }
 
     if (!req.rawBody) {
       // Without the exact bytes Meta signed, the digest can't be reproduced.
+      this.logger.error(
+        'Instagram webhook arrived but the raw body was unavailable, so the signature could not be checked',
+      );
       throw new BadRequestException('Raw body unavailable for signature check');
     }
 
@@ -236,7 +270,12 @@ export class InstagramDmController {
     const a = Buffer.from(provided);
     const b = Buffer.from(expected);
     if (a.length !== b.length || !timingSafeEqual(a, b)) {
-      this.logger.warn('Rejected an Instagram webhook delivery with a bad signature');
+      // Overwhelmingly this is the wrong secret: Meta shows an *Instagram* app
+      // secret and a *Facebook* app secret, and only the Instagram one signs
+      // these deliveries.
+      this.logger.warn(
+        'Rejected an Instagram webhook delivery: signature did not match INSTAGRAM_APP_SECRET. Check you used the Instagram app secret, not the Facebook one.',
+      );
       throw new ForbiddenException('Invalid signature');
     }
   }
