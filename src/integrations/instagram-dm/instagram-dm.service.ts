@@ -43,6 +43,22 @@ export interface IngestOutcome {
 export class InstagramDmService {
   private readonly logger = new Logger(InstagramDmService.name);
 
+  /**
+   * The most recent webhook attempt and how it went, including ones that were
+   * rejected before anything could be stored.
+   *
+   * Rejected deliveries leave no database row, so without this the only record
+   * of them is a log line — and "check the logs" is a poor answer when the
+   * question is simply "did Meta call us at all?". Held in memory: it is a live
+   * diagnostic, not history, and resets on deploy.
+   */
+  private lastDelivery: { at: Date; outcome: string; detail?: string } | null = null;
+
+  /** Record how a webhook delivery ended, whatever the outcome. */
+  recordDelivery(outcome: string, detail?: string): void {
+    this.lastDelivery = { at: new Date(), outcome, detail };
+  }
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
@@ -537,6 +553,15 @@ export class InstagramDmService {
       everReceived: total > 0,
       totalMessages: total,
       unmatchedMessages: unmatched,
+      // Distinguishes "Meta never called" from "Meta called and was turned
+      // away", which look identical from the message table alone.
+      lastDeliveryAttempt: this.lastDelivery
+        ? {
+            at: this.lastDelivery.at,
+            outcome: this.lastDelivery.outcome,
+            detail: this.lastDelivery.detail ?? null,
+          }
+        : null,
       lastMessageAt: latest?.receivedAt ?? null,
       lastMessageStatus: latest?.status ?? null,
       lastMessageFrom: latest?.senderUsername ?? null,
