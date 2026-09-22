@@ -95,6 +95,10 @@ export class InstagramDmController {
       // Meta also sends read receipts, reactions and echoes here. Saying so
       // beats silence, which reads like the delivery never happened.
       this.logger.log('Instagram webhook delivery carried no usable messages');
+      this.dm.recordDelivery(
+        'no_usable_messages',
+        'Meta called, but the payload held no incoming message — typically a read receipt, a reaction, or an echo of a message sent FROM the connected account',
+      );
       return { received: true, messages: 0 };
     }
 
@@ -246,6 +250,7 @@ export class InstagramDmController {
     const secret = this.config.get<string>('instagramDm.appSecret');
     if (!secret) {
       this.logger.error('INSTAGRAM_APP_SECRET is not set — refusing webhook delivery');
+      this.dm.recordDelivery('rejected_not_configured', 'INSTAGRAM_APP_SECRET is not set');
       throw new ForbiddenException('Instagram webhook is not configured');
     }
 
@@ -255,6 +260,10 @@ export class InstagramDmController {
       this.logger.warn(
         'Rejected an Instagram webhook delivery with no X-Hub-Signature-256 header — the caller was not Meta',
       );
+      this.dm.recordDelivery(
+        'rejected_no_signature',
+        'Something called the webhook without a signature header, so it was not Meta',
+      );
       throw new ForbiddenException('Missing signature');
     }
 
@@ -263,6 +272,7 @@ export class InstagramDmController {
       this.logger.error(
         'Instagram webhook arrived but the raw body was unavailable, so the signature could not be checked',
       );
+      this.dm.recordDelivery('rejected_no_raw_body', 'Raw request body was unavailable');
       throw new BadRequestException('Raw body unavailable for signature check');
     }
 
@@ -275,6 +285,10 @@ export class InstagramDmController {
       // these deliveries.
       this.logger.warn(
         'Rejected an Instagram webhook delivery: signature did not match INSTAGRAM_APP_SECRET. Check you used the Instagram app secret, not the Facebook one.',
+      );
+      this.dm.recordDelivery(
+        'rejected_bad_signature',
+        'Signature did not match INSTAGRAM_APP_SECRET — check you used the Instagram app secret, not the Facebook one',
       );
       throw new ForbiddenException('Invalid signature');
     }

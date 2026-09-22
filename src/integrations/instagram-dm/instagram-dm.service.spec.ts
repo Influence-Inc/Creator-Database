@@ -433,3 +433,43 @@ describe('InstagramDmService.integrationStatus', () => {
     }
   });
 });
+
+describe('InstagramDmService.recordDelivery', () => {
+  function svc() {
+    const prisma = {
+      instagramMessage: {
+        count: jest.fn().mockResolvedValue(0),
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+    } as unknown as PrismaService;
+    const config = { get: jest.fn() } as unknown as ConfigService;
+    const graph = { lookupUsername: jest.fn() } as unknown as InstagramGraphService;
+    return new InstagramDmService(prisma, config, graph);
+  }
+  const flags = { appSecret: true, verifyToken: true, accessToken: true };
+
+  it('reports no attempt before Meta has ever called', async () => {
+    const out = await svc().integrationStatus(flags);
+    expect(out.lastDeliveryAttempt).toBeNull();
+  });
+
+  it('surfaces a rejected delivery, which stores no message row', async () => {
+    const s = svc();
+    s.recordDelivery('rejected_bad_signature', 'wrong secret');
+    const out = await s.integrationStatus(flags);
+    // The distinction that matters: Meta DID call, it was just turned away.
+    expect(out.everReceived).toBe(false);
+    expect(out.lastDeliveryAttempt).toMatchObject({
+      outcome: 'rejected_bad_signature',
+      detail: 'wrong secret',
+    });
+  });
+
+  it('keeps only the most recent attempt', async () => {
+    const s = svc();
+    s.recordDelivery('rejected_no_signature');
+    s.recordDelivery('accepted', '1 message(s) received, 1 filed');
+    const out = await s.integrationStatus(flags);
+    expect(out.lastDeliveryAttempt?.outcome).toBe('accepted');
+  });
+});
