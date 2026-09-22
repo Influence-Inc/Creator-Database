@@ -55,6 +55,7 @@
     scoutAccountsOpen: false,
     // Links that arrived from Instagram accounts no scout has claimed.
     igUnmatched: null,
+    igStatus: null,
     igSyncing: false,
     igSyncResult: null,
     newScoutName: '',
@@ -1960,6 +1961,7 @@
       .then(function (sum) { state.scoutSummary = sum; render(); })
       .catch(function () {});
     loadIgUnmatched();
+    loadIgStatus();
     if (state.scoutUsers === null) loadScoutUsers();
   }
 
@@ -2280,6 +2282,65 @@
     );
   }
 
+  /**
+   * Plain-language health of the Instagram collection, from the status
+   * endpoint. Only speaks up when something is actually wrong — the whole point
+   * is that diagnosing this stopped requiring reading raw JSON or running curl.
+   */
+  function igHealthNotice() {
+    var st = state.igStatus;
+    if (!st) return '';
+
+    var problems = [];
+
+    if (!st.configured || !st.configured.accessToken) {
+      problems.push(
+        'No Instagram access token is set, so the inbox cannot be read at all. ' +
+        'Add INSTAGRAM_ACCESS_TOKEN in the deployment settings.'
+      );
+    } else if (st.connectedAccount && st.connectedAccount.error) {
+      problems.push(
+        'The access token could not be used: <strong>' + esc(st.connectedAccount.error) +
+        '</strong>. It has most likely expired and needs regenerating.'
+      );
+    } else if (st.connectedAccount && st.connectedAccount.username) {
+      // The check that rules out the most at once. A token for the wrong
+      // account reads the wrong inbox, and every symptom looks identical to
+      // "Meta isn't sending".
+      problems.push(
+        'Collecting DMs sent to <strong>@' + esc(st.connectedAccount.username) + '</strong>. ' +
+        'If scouters are messaging a different account, nothing will arrive.'
+      );
+    }
+
+    if (st.configured && st.configured.accessToken && !st.lastInboxSync) {
+      problems.push(
+        'The inbox has not been checked since the last restart. If this does not ' +
+        'clear within a few minutes, background jobs are switched off.'
+      );
+    }
+
+    if (!problems.length) return '';
+
+    return (
+      '<div class="ig-unmatched">' +
+      '<span class="ig-unmatched-dot"></span>' +
+      '<span>' + problems.join(' ') + '</span>' +
+      '</div>'
+    );
+  }
+
+  function loadIgStatus() {
+    scoutApi('/integrations/instagram/status')
+      .then(function (data) {
+        state.igStatus = data;
+        render();
+      })
+      .catch(function () {
+        // Informational only; a failure here shouldn't disturb the page.
+      });
+  }
+
   function scoutsView() {
     var head =
       '<div class="page-head">' +
@@ -2329,7 +2390,7 @@
       // click and notes save, and restarting the entrance animation each time
       // makes the whole table flash.
       '<div class="app">' + topbar() +
-      '<div class="page list">' + head + igSyncNotice() + igUnmatchedNotice() + scoutAccountsPanel() + toolbar + body + '</div></div>' +
+      '<div class="page list">' + head + igSyncNotice() + igHealthNotice() + igUnmatchedNotice() + scoutAccountsPanel() + toolbar + body + '</div></div>' +
       promoteModal()
     );
   }

@@ -575,3 +575,24 @@ model InstagramMessage {
   @@index([receivedAt])
   @@map("instagram_messages")
 }
+
+/// Every time Meta calls our webhook, however it ended.
+///
+/// The live diagnostic used to be held in memory, which made it useless for the
+/// one question it existed to answer: a redeploy wiped it, so "Meta has never
+/// called" and "Meta called before the last deploy" both read as null. Deliveries
+/// rejected before the signature check leave no `InstagramMessage` row either, so
+/// without this there is no durable evidence that Meta ever reached us at all.
+model InstagramWebhookDelivery {
+  id String @id @default(uuid())
+
+  /// `accepted`, `rejected_bad_signature`, `rejected_no_signature`, …
+  outcome String
+  /// Human-readable specifics, e.g. which check failed.
+  detail  String? @db.Text
+
+  at DateTime @default(now())
+
+  @@index([at])
+  @@map("instagram_webhook_deliveries")
+}
