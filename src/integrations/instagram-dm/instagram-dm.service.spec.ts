@@ -381,15 +381,41 @@ describe('InstagramDmService.unmatchedSummary', () => {
 });
 
 describe('InstagramDmService.integrationStatus', () => {
-  function statusDeps(total: number, unmatched: number, latest: unknown) {
+  /**
+   * Deliveries are stored, so the fake stores them too — an assertion against a
+   * fake that merely remembers the last call in memory would have passed for
+   * the very bug this replaced.
+   */
+  function statusDeps(
+    total: number,
+    unmatched: number,
+    latest: unknown,
+    who: { ok: true; id: string; username: string } | { ok: false; error: string } = {
+      ok: true,
+      id: 'BIZ',
+      username: 'influence__inc',
+    },
+  ) {
+    const deliveries: { outcome: string; detail: string | null; at: Date }[] = [];
     const prisma = {
       instagramMessage: {
         count: jest.fn().mockResolvedValueOnce(total).mockResolvedValueOnce(unmatched),
         findFirst: jest.fn().mockResolvedValue(latest),
       },
+      instagramWebhookDelivery: {
+        create: jest.fn(({ data }: { data: { outcome: string; detail: string | null } }) => {
+          deliveries.push({ ...data, at: new Date() });
+          return Promise.resolve(data);
+        }),
+        count: jest.fn(() => Promise.resolve(deliveries.length)),
+        findFirst: jest.fn(() => Promise.resolve(deliveries[deliveries.length - 1] ?? null)),
+      },
     } as unknown as PrismaService;
     const config = { get: jest.fn() } as unknown as ConfigService;
-    const graph = { lookupUsername: jest.fn() } as unknown as InstagramGraphService;
+    const graph = {
+      lookupUsername: jest.fn(),
+      whoami: jest.fn().mockResolvedValue(who),
+    } as unknown as InstagramGraphService;
     return new InstagramDmService(prisma, config, graph);
   }
 
@@ -397,11 +423,36 @@ describe('InstagramDmService.integrationStatus', () => {
 
   it('reports that Meta has never delivered anything', async () => {
     const out = await statusDeps(0, 0, null).integrationStatus(allSet);
-    // Configured but nothing received: the problem is Meta's subscription,
-    // not this service.
     expect(out.everReceived).toBe(false);
     expect(out.totalMessages).toBe(0);
     expect(out.lastMessageAt).toBeNull();
+    // Nothing filed AND nothing ever called: the problem is Meta's
+    // subscription, not this service.
+    expect(out.webhookDeliveries).toBe(0);
+  });
+
+  it('names the Instagram account the configured token actually controls', async () => {
+    const out = await statusDeps(0, 0, null).integrationStatus(allSet);
+    // The check that rules out the most at once, answered without a hand-run
+    // curl: a token for the wrong account subscribes the wrong inbox.
+    expect(out.connectedAccount).toEqual({ username: 'influence__inc', id: 'BIZ' });
+  });
+
+  it('surfaces why the account could not be read instead of going quiet', async () => {
+    const out = await statusDeps(0, 0, null, {
+      ok: false,
+      error: 'Invalid OAuth access token',
+    }).integrationStatus(allSet);
+    expect(out.connectedAccount).toEqual({ error: 'Invalid OAuth access token' });
+  });
+
+  it('does not call Graph when there is no token to call it with', async () => {
+    const out = await statusDeps(0, 0, null).integrationStatus({
+      appSecret: true,
+      verifyToken: true,
+      accessToken: false,
+    });
+    expect(out.connectedAccount).toEqual({ error: 'INSTAGRAM_ACCESS_TOKEN is not set' });
   });
 
   it('reports the most recent delivery once something has arrived', async () => {
@@ -432,45 +483,48 @@ describe('InstagramDmService.integrationStatus', () => {
       expect(typeof value).toBe('boolean');
     }
   });
-});
 
-describe('InstagramDmService.recordDelivery', () => {
-  function svc() {
-    const prisma = {
-      instagramMessage: {
-        count: jest.fn().mockResolvedValue(0),
-        findFirst: jest.fn().mockResolvedValue(null),
-      },
-    } as unknown as PrismaService;
-    const config = { get: jest.fn() } as unknown as ConfigService;
-    const graph = { lookupUsername: jest.fn() } as unknown as InstagramGraphService;
-    return new InstagramDmService(prisma, config, graph);
-  }
-  const flags = { appSecret: true, verifyToken: true, accessToken: true };
+  describe('recordDelivery', () => {
+    const flags = allSet;
 
-  it('reports no attempt before Meta has ever called', async () => {
-    const out = await svc().integrationStatus(flags);
-    expect(out.lastDeliveryAttempt).toBeNull();
-  });
-
-  it('surfaces a rejected delivery, which stores no message row', async () => {
-    const s = svc();
-    s.recordDelivery('rejected_bad_signature', 'wrong secret');
-    const out = await s.integrationStatus(flags);
-    // The distinction that matters: Meta DID call, it was just turned away.
-    expect(out.everReceived).toBe(false);
-    expect(out.lastDeliveryAttempt).toMatchObject({
-      outcome: 'rejected_bad_signature',
-      detail: 'wrong secret',
+    it('reports no attempt before Meta has ever called', async () => {
+      const out = await statusDeps(0, 0, null).integrationStatus(flags);
+      expect(out.lastDeliveryAttempt).toBeNull();
     });
-  });
 
-  it('keeps only the most recent attempt', async () => {
-    const s = svc();
-    s.recordDelivery('rejected_no_signature');
-    s.recordDelivery('accepted', '1 message(s) received, 1 filed');
-    const out = await s.integrationStatus(flags);
-    expect(out.lastDeliveryAttempt?.outcome).toBe('accepted');
+    it('surfaces a rejected delivery, which stores no message row', async () => {
+      const s = statusDeps(0, 0, null);
+      s.recordDelivery('rejected_bad_signature', 'wrong secret');
+      const out = await s.integrationStatus(flags);
+      // The distinction that matters: Meta DID call, it was just turned away.
+      expect(out.everReceived).toBe(false);
+      expect(out.webhookDeliveries).toBe(1);
+      expect(out.lastDeliveryAttempt).toMatchObject({
+        outcome: 'rejected_bad_signature',
+        detail: 'wrong secret',
+      });
+    });
+
+    it('keeps every attempt, reporting the most recent', async () => {
+      const s = statusDeps(0, 0, null);
+      s.recordDelivery('rejected_no_signature');
+      s.recordDelivery('accepted', '1 message(s) received, 1 filed');
+      const out = await s.integrationStatus(flags);
+      expect(out.lastDeliveryAttempt?.outcome).toBe('accepted');
+      // Both are kept: one call is the whole answer to "did Meta ever reach us".
+      expect(out.webhookDeliveries).toBe(2);
+    });
+
+    it('never lets a failed diagnostic write break the webhook', async () => {
+      const s = statusDeps(0, 0, null);
+      const prisma = (
+        s as unknown as { prisma: { instagramWebhookDelivery: { create: jest.Mock } } }
+      ).prisma;
+      prisma.instagramWebhookDelivery.create.mockRejectedValueOnce(new Error('db down'));
+      // Meta retries anything that isn't a 200, so a diagnostic must never throw.
+      expect(() => s.recordDelivery('accepted')).not.toThrow();
+      await Promise.resolve();
+    });
   });
 });
 

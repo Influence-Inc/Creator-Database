@@ -75,6 +75,26 @@ export class InstagramGraphService implements OnModuleInit {
   }
 
   /**
+   * Like `me()`, but keeps the failure reason instead of collapsing it to null.
+   *
+   * This is the single most diagnostic call in the whole integration: it says
+   * which Instagram account the configured token actually belongs to. A token
+   * for the wrong account subscribes the wrong inbox, so DMs sent to the company
+   * account go nowhere — and from the outside that is indistinguishable from a
+   * webhook that Meta simply never sends.
+   */
+  async whoami(): Promise<
+    { ok: true; id: string; username: string } | { ok: false; error: string }
+  > {
+    const res = await this.get('/me', { fields: 'id,username' });
+    if (!res.ok) return { ok: false, error: res.error };
+    const id = typeof res.body.id === 'string' ? res.body.id : '';
+    const username = typeof res.body.username === 'string' ? res.body.username : '';
+    if (!id) return { ok: false, error: 'Graph returned no account id' };
+    return { ok: true, id, username };
+  }
+
+  /**
    * Recent conversations with their messages, in one call via field expansion.
    *
    * This is the read-the-inbox route, used when webhook delivery can't be

@@ -43,20 +43,29 @@ export interface IngestOutcome {
 export class InstagramDmService {
   private readonly logger = new Logger(InstagramDmService.name);
 
-  /**
-   * The most recent webhook attempt and how it went, including ones that were
-   * rejected before anything could be stored.
-   *
-   * Rejected deliveries leave no database row, so without this the only record
-   * of them is a log line — and "check the logs" is a poor answer when the
-   * question is simply "did Meta call us at all?". Held in memory: it is a live
-   * diagnostic, not history, and resets on deploy.
-   */
-  private lastDelivery: { at: Date; outcome: string; detail?: string } | null = null;
+  /** When the inbox was last polled, and what it found. */
+  private lastInboxSync: { at: Date; detail: string } | null = null;
 
-  /** Record how a webhook delivery ended, whatever the outcome. */
+  /**
+   * Record how a webhook delivery ended, whatever the outcome.
+   *
+   * Written to the database rather than held in memory. Rejected deliveries
+   * leave no `InstagramMessage` row, so this is the only evidence that Meta
+   * reached us at all — and an in-memory copy was wiped by every redeploy,
+   * which made "Meta has never called" and "Meta called before the last
+   * deploy" both read as null. That ambiguity is precisely what this is for.
+   *
+   * Deliberately fire-and-forget: a diagnostic write must never be able to
+   * fail the webhook itself, because Meta retries anything that isn't a 200.
+   */
   recordDelivery(outcome: string, detail?: string): void {
-    this.lastDelivery = { at: new Date(), outcome, detail };
+    void this.prisma.instagramWebhookDelivery
+      ?.create({ data: { outcome, detail: detail ?? null } })
+      .catch((err: unknown) => {
+        this.logger.warn(
+          `Could not record webhook delivery: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
   }
 
   constructor(
@@ -534,7 +543,7 @@ export class InstagramDmService {
     verifyToken: boolean;
     accessToken: boolean;
   }) {
-    const [total, latest, unmatched] = await Promise.all([
+    const [total, latest, unmatched, deliveries, lastDelivery, account] = await Promise.all([
       this.prisma.instagramMessage.count(),
       this.prisma.instagramMessage.findFirst({
         orderBy: { receivedAt: 'desc' },
@@ -543,24 +552,46 @@ export class InstagramDmService {
       this.prisma.instagramMessage.count({
         where: { status: InstagramMessageStatus.UNMATCHED_SENDER },
       }),
+      this.prisma.instagramWebhookDelivery.count(),
+      this.prisma.instagramWebhookDelivery.findFirst({ orderBy: { at: 'desc' } }),
+      // Answers "does the token belong to the account people are DMing?" here,
+      // rather than leaving it to a hand-run curl. It is the check that rules
+      // out the most at once, so it should never be the one nobody does.
+      configured.accessToken
+        ? this.graph.whoami()
+        : Promise.resolve({ ok: false as const, error: 'INSTAGRAM_ACCESS_TOKEN is not set' }),
     ]);
 
     return {
       configured,
-      // A delivery has reached us at least once. If this is null and the
-      // settings above are all true, Meta simply isn't sending — the problem is
-      // in the Meta app's webhook subscription, not here.
+      // Which Instagram account the configured token actually controls. If this
+      // username isn't the one scouters are messaging, nothing downstream can
+      // work: the subscription is on the wrong inbox.
+      connectedAccount: account.ok
+        ? { username: account.username, id: account.id }
+        : { error: account.error },
+      // A message has been filed at least once.
       everReceived: total > 0,
       totalMessages: total,
       unmatchedMessages: unmatched,
+      // Separately: has Meta ever called at all, accepted or rejected? Durable,
+      // so it survives a redeploy — an in-memory answer here was worse than
+      // none, because it reset to null every deploy and read as "never called".
+      webhookDeliveries: deliveries,
       // Distinguishes "Meta never called" from "Meta called and was turned
       // away", which look identical from the message table alone.
-      lastDeliveryAttempt: this.lastDelivery
+      lastDeliveryAttempt: lastDelivery
         ? {
-            at: this.lastDelivery.at,
-            outcome: this.lastDelivery.outcome,
-            detail: this.lastDelivery.detail ?? null,
+            at: lastDelivery.at,
+            outcome: lastDelivery.outcome,
+            detail: lastDelivery.detail,
           }
+        : null,
+      // Proof the poller is alive, which matters most when the webhook isn't:
+      // if this is null well after a deploy, scheduling is off or the token is
+      // missing, and nothing is being collected at all.
+      lastInboxSync: this.lastInboxSync
+        ? { at: this.lastInboxSync.at, detail: this.lastInboxSync.detail }
         : null,
       lastMessageAt: latest?.receivedAt ?? null,
       lastMessageStatus: latest?.status ?? null,
@@ -655,10 +686,15 @@ export class InstagramDmService {
       }
     }
 
-    this.recordDelivery(
-      'inbox_sync',
-      `Read ${conversations.length} conversation(s), ${messagesSeen} message(s); filed ${filed}`,
-    );
+    // Deliberately not recorded as a webhook delivery: that table answers
+    // "has Meta ever called us?", and polling every couple of minutes would
+    // both bury the answer and swamp the table. Kept in memory instead — a
+    // poll that resets on deploy costs nothing, since the next one is minutes
+    // away.
+    this.lastInboxSync = {
+      at: new Date(),
+      detail: `${conversations.length} conversation(s), ${messagesSeen} message(s), ${filed} filed`,
+    };
     this.logger.log(
       `Instagram inbox sync: ${conversations.length} conversation(s), ${messagesSeen} message(s), ${filed} filed, ${alreadyKnown} already known, ${unmatched} unmatched`,
     );
