@@ -83,8 +83,13 @@ it into a username to match against a scout's handle. Without it nothing can be
 placed, and the app says so on startup. The id is cached on first match so the
 lookup happens once per scout. Messages that can't be placed are still recorded
 rather than dropped, and are re-checked whenever a scout connects an account;
-redelivered webhooks are ignored by message id rather than filed twice. When
-links do arrive from an account no scout has claimed — almost always a mistyped
+redelivered webhooks are ignored by message id rather than filed twice. If Meta isn't delivering webhooks — which can fail silently for reasons
+invisible from here, such as an unaccepted message request or a disabled
+messaging toggle — `POST /integrations/instagram/sync` reads the account's inbox
+directly with the same access token and files anything new. It is safe to run
+alongside the webhook, since ingestion is keyed on Meta's message id, and it is
+the only way to pick up messages sent before the integration was wired up.
+When links do arrive from an account no scout has claimed — almost always a mistyped
 handle — the Scouts page says so in a line naming the sending accounts, which is
 what makes the mistake fixable; it clears itself as those scouts connect.
 

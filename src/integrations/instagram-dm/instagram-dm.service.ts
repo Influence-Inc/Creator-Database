@@ -568,6 +568,114 @@ export class InstagramDmService {
     };
   }
 
+  /**
+   * Read the connected account's inbox directly and file anything new.
+   *
+   * The webhook is the intended path, but it depends on Meta actually calling —
+   * which can fail silently for reasons invisible from here (an unaccepted
+   * message request, a disabled messaging toggle, app-mode restrictions). This
+   * asks for the messages instead, so the feature works either way. It also
+   * picks up messages sent BEFORE the integration was wired up, which a webhook
+   * can never backfill.
+   *
+   * Safe to run alongside the webhook: ingestion is keyed on Meta's message id,
+   * so a message seen by both routes is filed once.
+   *
+   * Returns a diagnostic summary rather than throwing, because the first
+   * question when nothing appears is "what did Meta actually return?".
+   */
+  async syncInbox(): Promise<{
+    ok: boolean;
+    error?: string;
+    conversations: number;
+    messagesSeen: number;
+    ownMessagesSkipped: number;
+    filed: number;
+    alreadyKnown: number;
+    unmatched: number;
+    sample?: unknown;
+  }> {
+    const me = await this.graph.me();
+    const res = await this.graph.fetchConversations();
+
+    if (!res.ok) {
+      this.logger.warn(`Instagram inbox sync failed: ${res.error}`);
+      return {
+        ok: false,
+        error: res.error,
+        conversations: 0,
+        messagesSeen: 0,
+        ownMessagesSkipped: 0,
+        filed: 0,
+        alreadyKnown: 0,
+        unmatched: 0,
+      };
+    }
+
+    const conversations = Array.isArray(res.body.data) ? res.body.data : [];
+    let messagesSeen = 0;
+    let ownMessagesSkipped = 0;
+    let filed = 0;
+    let alreadyKnown = 0;
+    let unmatched = 0;
+    let sample: unknown;
+
+    for (const raw of conversations as Array<Record<string, unknown>>) {
+      const wrapper = (raw?.messages ?? {}) as { data?: unknown };
+      const messages = Array.isArray(wrapper.data) ? wrapper.data : [];
+
+      for (const item of messages as Array<Record<string, unknown>>) {
+        const id = typeof item.id === 'string' ? item.id : null;
+        const from = (item.from ?? {}) as { id?: unknown; username?: unknown };
+        const senderId = typeof from.id === 'string' ? from.id : null;
+        if (!id || !senderId) continue;
+
+        messagesSeen += 1;
+        // Keep one example so a shape we don't understand can be inspected
+        // rather than guessed at.
+        if (!sample) sample = item;
+
+        // Messages the company account sent are not scouting finds.
+        if (me && senderId === me.id) {
+          ownMessagesSkipped += 1;
+          continue;
+        }
+
+        const outcome = await this.ingest({
+          messageId: id,
+          senderId,
+          text: typeof item.message === 'string' ? item.message : null,
+          attachmentUrls: attachmentUrls(item),
+          raw: item,
+        });
+
+        if (outcome.note === 'duplicate delivery') alreadyKnown += 1;
+        else if (outcome.status === InstagramMessageStatus.APPLIED) filed += 1;
+        else if (outcome.status === InstagramMessageStatus.UNMATCHED_SENDER) unmatched += 1;
+      }
+    }
+
+    this.recordDelivery(
+      'inbox_sync',
+      `Read ${conversations.length} conversation(s), ${messagesSeen} message(s); filed ${filed}`,
+    );
+    this.logger.log(
+      `Instagram inbox sync: ${conversations.length} conversation(s), ${messagesSeen} message(s), ${filed} filed, ${alreadyKnown} already known, ${unmatched} unmatched`,
+    );
+
+    return {
+      ok: true,
+      conversations: conversations.length,
+      messagesSeen,
+      ownMessagesSkipped,
+      filed,
+      alreadyKnown,
+      unmatched,
+      // Only when nothing was filed — it's for diagnosis, not routine output.
+      ...(filed === 0 && messagesSeen > 0 ? { sample } : {}),
+    };
+  }
+
   /** Recent inbound messages for the admin log. */
   async recent(limit = 50, status?: InstagramMessageStatus) {
     return this.prisma.instagramMessage.findMany({

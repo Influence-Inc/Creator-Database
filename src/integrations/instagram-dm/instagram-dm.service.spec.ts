@@ -473,3 +473,107 @@ describe('InstagramDmService.recordDelivery', () => {
     expect(out.lastDeliveryAttempt?.outcome).toBe('accepted');
   });
 });
+
+describe('InstagramDmService.syncInbox', () => {
+  const BIZ = 'BIZ_ID';
+
+  function syncDeps(conversations: unknown, opts: { graphOk?: boolean; error?: string } = {}) {
+    const prisma = {
+      instagramMessage: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue({ id: 'm' }),
+      },
+      user: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'scout-1', instagramHandle: 'priya.scouts' }),
+        update: jest.fn().mockResolvedValue({ id: 'scout-1', instagramHandle: 'priya.scouts' }),
+      },
+      scoutEntry: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue({ id: 'e1', rowNumber: 1 }),
+        update: jest.fn().mockResolvedValue({ id: 'e1', rowNumber: 1 }),
+      },
+    } as unknown as PrismaService;
+
+    const config = { get: jest.fn().mockReturnValue(24) } as unknown as ConfigService;
+    const graph = {
+      me: jest.fn().mockResolvedValue({ id: BIZ, username: 'influence__inc' }),
+      fetchConversations: jest
+        .fn()
+        .mockResolvedValue(
+          opts.graphOk === false
+            ? { ok: false, error: opts.error ?? 'boom' }
+            : { ok: true, body: { data: conversations } },
+        ),
+      lookupUsername: jest.fn().mockResolvedValue('priya.scouts'),
+    } as unknown as InstagramGraphService;
+
+    return { svc: new InstagramDmService(prisma, config, graph), prisma };
+  }
+
+  const convo = (messages: unknown[]) => [{ id: 'c1', messages: { data: messages } }];
+
+  it('reports the reason when Meta refuses the read, instead of throwing', async () => {
+    const { svc } = syncDeps([], { graphOk: false, error: 'Invalid OAuth access token' });
+    const out = await svc.syncInbox();
+    expect(out.ok).toBe(false);
+    expect(out.error).toBe('Invalid OAuth access token');
+    expect(out.filed).toBe(0);
+  });
+
+  it("files an incoming message and skips the account's own replies", async () => {
+    const { svc, prisma } = syncDeps(
+      convo([
+        {
+          id: 'm1',
+          from: { id: 'IGSID_1', username: 'priya.scouts' },
+          message: 'https://instagram.com/found',
+        },
+        { id: 'm2', from: { id: BIZ, username: 'influence__inc' }, message: 'thanks!' },
+      ]),
+    );
+    const out = await svc.syncInbox();
+    expect(out.messagesSeen).toBe(2);
+    expect(out.ownMessagesSkipped).toBe(1);
+    expect(out.filed).toBe(1);
+    // The company's own reply must never become a scouting row.
+    expect((prisma.scoutEntry.create as jest.Mock).mock.calls).toHaveLength(1);
+  });
+
+  it('counts a message it has already filed rather than filing it twice', async () => {
+    const { svc, prisma } = syncDeps(
+      convo([{ id: 'm1', from: { id: 'IGSID_1' }, message: 'https://instagram.com/found' }]),
+    );
+    (prisma.instagramMessage.findUnique as jest.Mock).mockResolvedValue({
+      id: 'x',
+      status: 'APPLIED',
+      entryId: 'e1',
+    });
+    const out = await svc.syncInbox();
+    expect(out.alreadyKnown).toBe(1);
+    expect(out.filed).toBe(0);
+    expect(prisma.scoutEntry.create).not.toHaveBeenCalled();
+  });
+
+  it('returns a sample message when it read some but filed none', async () => {
+    // So an unfamiliar payload shape can be inspected rather than guessed at.
+    const { svc } = syncDeps(
+      convo([{ id: 'm1', from: { id: 'IGSID_1' }, message: 'just saying hello' }]),
+    );
+    const out = await svc.syncInbox();
+    expect(out.filed).toBe(0);
+    expect(out.sample).toMatchObject({ id: 'm1' });
+  });
+
+  it('ignores malformed entries without failing the whole run', async () => {
+    const { svc } = syncDeps(
+      convo([
+        { message: 'no id or sender' },
+        { id: 'm1', from: { id: 'IGSID_1' }, message: 'https://instagram.com/found' },
+      ]),
+    );
+    const out = await svc.syncInbox();
+    expect(out.ok).toBe(true);
+    expect(out.messagesSeen).toBe(1);
+    expect(out.filed).toBe(1);
+  });
+});
