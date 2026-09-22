@@ -671,8 +671,12 @@ export class InstagramDmService {
       filed,
       alreadyKnown,
       unmatched,
-      // Only when nothing was filed — it's for diagnosis, not routine output.
-      ...(filed === 0 && messagesSeen > 0 ? { sample } : {}),
+      // Only when messages were read but none could be accounted for. Messages
+      // already on file are a normal repeat run, not a payload we failed to
+      // understand, and dumping a sample there is just noise.
+      ...(filed === 0 && alreadyKnown === 0 && unmatched === 0 && messagesSeen > 0
+        ? { sample }
+        : {}),
     };
   }
 
