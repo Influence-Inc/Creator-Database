@@ -137,6 +137,20 @@ export class InstagramDmController {
     });
   }
 
+  /**
+   * Read the connected account's inbox now and file anything new.
+   *
+   * The manual counterpart to the webhook, for when Meta isn't delivering — and
+   * the only way to pick up messages sent before the integration was wired up.
+   */
+  @Public()
+  @UseGuards(SessionGuard)
+  @Roles(UserRole.ADMIN)
+  @Post('sync')
+  sync() {
+    return this.dm.syncInbox();
+  }
+
   /** How many links arrived from accounts not linked to any scout. */
   @Public()
   @UseGuards(SessionGuard)
