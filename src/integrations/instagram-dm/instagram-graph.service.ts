@@ -1,6 +1,9 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
+/** Message fields every Instagram API version accepts on a conversation read. */
+const CORE_MESSAGE_FIELDS = 'id,created_time,from,to,message,attachments';
+
 /**
  * The slice of Meta's Graph API this integration needs: turning the
  * Instagram-scoped id Meta puts on a webhook into a username we can match
@@ -103,12 +106,37 @@ export class InstagramGraphService implements OnModuleInit {
    * text is preserved for diagnosis.
    */
   async fetchConversations(limit = 25, messagesPerConversation = 25) {
-    return this.get('/me/conversations', {
-      platform: 'instagram',
-      limit: String(limit),
-      fields: `messages.limit(${messagesPerConversation}){id,created_time,from,to,message,attachments}`,
-    });
+    const read = (fields: string) =>
+      this.get('/me/conversations', {
+        platform: 'instagram',
+        limit: String(limit),
+        fields: `messages.limit(${messagesPerConversation}){${fields}}`,
+      });
+
+    // `shares` is where the API reports a shared post, and `is_unsupported`
+    // marks content Meta won't pass through — without them a share read from
+    // the inbox carries nothing to file. They're asked for first; if this
+    // account's API version rejects either, the whole call would fail, so fall
+    // back to the core fields rather than stop polling altogether, and stop
+    // asking for them from then on.
+    if (!this.extendedFieldsRejected) {
+      const res = await read(`${CORE_MESSAGE_FIELDS},shares,is_unsupported`);
+      if (res.ok) return res;
+      this.logger.warn(
+        `Instagram rejected the extended message fields (${res.error}); retrying with the core fields`,
+      );
+      const fallback = await read(CORE_MESSAGE_FIELDS);
+      // Only latch when Meta actually objected to a field (e.g. "Tried
+      // accessing nonexisting field (shares)"); a timeout on the first call
+      // mustn't switch shares off until the next deploy.
+      if (fallback.ok && /field/i.test(res.error)) this.extendedFieldsRejected = true;
+      return fallback;
+    }
+    return read(CORE_MESSAGE_FIELDS);
   }
+
+  /** Set once Meta refuses `shares` / `is_unsupported`, so polls stop retrying them. */
+  private extendedFieldsRejected = false;
 
   /** Resolve an IGSID to its username, or null if that isn't possible. */
   async lookupUsername(igsid: string): Promise<string | null> {

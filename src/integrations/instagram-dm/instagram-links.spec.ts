@@ -1,4 +1,14 @@
-import { attachmentUrls, classifyLink, classifyMessageLinks } from './instagram-links';
+import {
+  attachmentUrls,
+  classifyLink,
+  classifyMessageLinks,
+  messageNode,
+  sharedItems,
+} from './instagram-links';
+
+// What Meta actually puts on a share: a temporary media URL, never a permalink.
+const CDN =
+  'https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=17912345678901234&signature=AbC';
 
 describe('classifyLink', () => {
   it('reads a bare handle as a profile and canonicalises it', () => {
@@ -122,5 +132,147 @@ describe('attachmentUrls', () => {
   it('is unfazed by a message with no attachments', () => {
     expect(attachmentUrls({})).toEqual([]);
     expect(attachmentUrls({ attachments: null as never })).toEqual([]);
+  });
+
+  it('reads Conversations API media and shares, which have no payload', () => {
+    expect(
+      attachmentUrls({
+        attachments: {
+          data: [{ video_data: { url: CDN } }, { image_data: { url: 'https://x.test/i.jpg' } }],
+        },
+        shares: { data: [{ link: 'https://www.instagram.com/p/BBB/' }] },
+      }),
+    ).toEqual([CDN, 'https://x.test/i.jpg', 'https://www.instagram.com/p/BBB/']);
+  });
+});
+
+describe('sharedItems — webhook shares', () => {
+  it('reads a shared reel as a reel even though its url is a CDN link', () => {
+    const [item] = sharedItems({
+      attachments: [
+        {
+          type: 'ig_reel',
+          payload: { reel_video_id: '17912345678901234', title: 'cooking hack', url: CDN },
+        },
+      ],
+    });
+    expect(item).toEqual({
+      kind: 'reel',
+      source: 'ig_reel',
+      url: CDN,
+      mediaId: '17912345678901234',
+      title: 'cooking hack',
+      handle: null,
+    });
+  });
+
+  it('reads a shared post as a reel — it is still the content to remake', () => {
+    const [item] = sharedItems({
+      attachments: [{ type: 'ig_post', payload: { id: '3401234567890', url: CDN } }],
+    });
+    expect(item.kind).toBe('reel');
+    expect(item.mediaId).toBe('3401234567890');
+  });
+
+  it('reads the legacy share type as a reel', () => {
+    expect(sharedItems({ attachments: [{ type: 'share', payload: { url: CDN } }] })[0].kind).toBe(
+      'reel',
+    );
+  });
+
+  it('uses a real instagram.com link when a share carries one', () => {
+    const out = sharedItems({
+      attachments: [
+        { type: 'share', payload: { url: 'https://www.instagram.com/mazeirons/' } },
+        { type: 'ig_reel', payload: { url: 'https://www.instagram.com/reel/Da3JEdVow8N/?igsh=x' } },
+      ],
+    });
+    expect(out.map((i) => [i.kind, i.url])).toEqual([
+      ['profile', 'https://instagram.com/mazeirons'],
+      ['reel', 'https://www.instagram.com/reel/Da3JEdVow8N'],
+    ]);
+  });
+
+  it('reads a profile share by its handle', () => {
+    for (const payload of [{ username: 'MazeIrons', url: CDN }, { title: '@mazeirons' }]) {
+      const [item] = sharedItems({ attachments: [{ type: 'ig_profile', payload }] });
+      expect(item.kind).toBe('profile');
+      expect(item.url).toBe('https://instagram.com/mazeirons');
+      expect(item.handle).toBe('mazeirons');
+    }
+  });
+
+  it('does not invent a profile when a profile share has no handle', () => {
+    const [item] = sharedItems({ attachments: [{ type: 'ig_profile', payload: { url: CDN } }] });
+    expect(item.kind).toBe('unknown');
+  });
+
+  it('does not mistake a plain photo or video upload for a share', () => {
+    const out = sharedItems({
+      attachments: [
+        { type: 'image', payload: { url: 'https://x.test/photo.jpg' } },
+        { type: 'video', payload: { url: 'https://x.test/clip.mp4' } },
+      ],
+    });
+    expect(out.map((i) => i.kind)).toEqual(['unknown', 'unknown']);
+  });
+
+  it('is unfazed by nothing at all', () => {
+    expect(sharedItems(undefined)).toEqual([]);
+    expect(sharedItems({})).toEqual([]);
+  });
+});
+
+describe('sharedItems — Conversations API (inbox poll)', () => {
+  it('reads a shared reel returned as video media', () => {
+    const [item] = sharedItems({ attachments: { data: [{ id: 'a1', video_data: { url: CDN } }] } });
+    expect(item.kind).toBe('reel');
+    expect(item.url).toBe(CDN);
+  });
+
+  it('reads shared posts from the shares field', () => {
+    const out = sharedItems({
+      shares: {
+        data: [{ link: CDN, name: 'caption' }, { link: 'https://www.instagram.com/p/BBB/' }],
+      },
+    });
+    expect(out.map((i) => [i.kind, i.url])).toEqual([
+      ['reel', CDN],
+      ['reel', 'https://www.instagram.com/p/BBB'],
+    ]);
+  });
+});
+
+describe('classifyMessageLinks with shares', () => {
+  it('files a CDN-linked share as a reel instead of dropping it', () => {
+    const shares = sharedItems({ attachments: [{ type: 'ig_reel', payload: { url: CDN } }] });
+    expect(classifyMessageLinks({ text: null, shares })).toEqual({
+      profileLinks: [],
+      reelLinks: [CDN],
+      otherLinks: [],
+    });
+  });
+
+  it('keeps an unrecognised attachment as other, not as a reel', () => {
+    const shares = sharedItems({
+      attachments: [{ type: 'audio', payload: { url: 'https://x.test/a.mp4' } }],
+    });
+    const out = classifyMessageLinks({ shares });
+    expect(out.reelLinks).toEqual([]);
+    expect(out.otherLinks).toEqual(['https://x.test/a.mp4']);
+  });
+});
+
+describe('messageNode', () => {
+  it('unwraps a stored webhook event to its message', () => {
+    expect(messageNode({ sender: { id: '1' }, message: { mid: 'm', attachments: [] } })).toEqual({
+      mid: 'm',
+      attachments: [],
+    });
+  });
+
+  it('returns an inbox-read message as-is, where `message` is just the text', () => {
+    const item = { id: 'm', message: 'hello', attachments: { data: [] } };
+    expect(messageNode(item)).toBe(item);
   });
 });

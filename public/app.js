@@ -2442,16 +2442,23 @@
     var r = state.igSyncResult;
     if (!r) return '';
 
+    // Earlier shares recovered from stored payloads — independent of whether
+    // the live inbox read below succeeded.
+    var refiled = r.refiled
+      ? ' Re-filed ' + esc(r.refiled) + ' earlier share' + (r.refiled === 1 ? '' : 's') + ' onto scout sheets.'
+      : '';
+
     if (r.ok === false) {
       return (
         '<div class="ig-unmatched ig-unmatched-bad">' +
         '<span class="ig-unmatched-dot"></span>' +
-        '<span>Instagram said: <strong>' + esc(r.error || 'the read was refused') + '</strong></span>' +
+        '<span>Instagram said: <strong>' + esc(r.error || 'the read was refused') + '</strong>' + refiled + '</span>' +
         '</div>'
       );
     }
 
     var summary =
+      (refiled ? refiled.slice(1) + ' ' : '') +
       'Read ' + esc(r.conversations) + ' conversation' + (r.conversations === 1 ? '' : 's') +
       ' and ' + esc(r.messagesSeen) + ' message' + (r.messagesSeen === 1 ? '' : 's') + '. ' +
       'Filed ' + esc(r.filed) + '.' +
