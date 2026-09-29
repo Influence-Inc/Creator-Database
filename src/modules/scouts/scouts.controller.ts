@@ -35,6 +35,8 @@ import { ScoutsService } from './scouts.service';
  *   DELETE /scouts/entries/:id    remove a row
  *   PATCH  /scouts/entries/:id/review   admin: qualification + notes
  *   POST   /scouts/entries/:id/promote  admin: push into the Creator Database
+ *                                        (and the scout's Deal Studio campaign)
+ *   POST   /scouts/entries/:id/deal-studio  admin: retry the Deal Studio add
  *   GET    /scouts/summary        admin: counters
  *
  * Routes are `@Public()` so the global API-key/read guards step aside and
@@ -70,6 +72,9 @@ export class ScoutsController {
     return {
       instagramHandle: user.instagramHandle,
       instagramLinked: user.instagramLinked,
+      // So a scout knows which campaign their finds are going to. The name only:
+      // the id is Deal Studio's and means nothing to them.
+      dealStudioCampaignName: user.dealStudioCampaignName,
       isAccount: true,
     };
   }
@@ -138,6 +143,12 @@ export class ScoutsController {
   @Roles(UserRole.ADMIN)
   promote(@Req() req: AuthedRequest, @Param('id') id: string) {
     return this.scouts.promote(id, this.principal(req));
+  }
+
+  @Post('entries/:id/deal-studio')
+  @Roles(UserRole.ADMIN)
+  retryDealStudio(@Req() req: AuthedRequest, @Param('id') id: string) {
+    return this.scouts.retryDealStudio(id, this.principal(req));
   }
 
   @Get('summary')

@@ -56,6 +56,12 @@
     // Links that arrived from Instagram accounts no scout has claimed.
     igUnmatched: null,
     igStatus: null,
+    // Deal Studio campaigns for the scouter picker: { configured, campaigns, error }.
+    dsCampaigns: null,
+    dsSavingUser: null,
+    scoutDsBusyId: null,
+    // Outcome of the last promote's Deal Studio step, when it needs attention.
+    dsNotice: null,
     igSyncing: false,
     igSyncResult: null,
     newScoutName: '',
@@ -1962,6 +1968,7 @@
       .catch(function () {});
     loadIgUnmatched();
     loadIgStatus();
+    if (state.dsCampaigns === null) loadDealStudioCampaigns();
     if (state.scoutUsers === null) loadScoutUsers();
   }
 
@@ -2010,6 +2017,31 @@
       .join('');
   }
 
+  /** Where a promoted row went in Deal Studio, or what's stopping it. */
+  function dealStudioCell(e) {
+    var ds = state.dsCampaigns;
+    if (ds && !ds.configured) return '';
+    var busy = state.scoutDsBusyId === e.id;
+    var send = function (label) {
+      return '<button class="link-btn" data-act="scout-ds-send" data-id="' + esc(e.id) + '"' +
+        (busy ? ' disabled' : '') + '>' + (busy ? 'Sending…' : label) + '</button>';
+    };
+
+    if (e.dealStudioAddedAt) {
+      return '<div class="ds-state ds-ok" title="Added to this Deal Studio campaign">' +
+        'Deal Studio · ' + esc(e.dealStudioCampaignName || 'campaign') + '</div>';
+    }
+    if (e.dealStudioError) {
+      return '<div class="ds-state ds-bad" title="' + esc(e.dealStudioError) + '">Deal Studio failed</div>' +
+        send('Retry');
+    }
+    // Promoted while the scouter had no campaign. Offer the send once they do.
+    var hasCampaign = e.scout && e.scout.dealStudioCampaignId;
+    return hasCampaign
+      ? send('Send to Deal Studio')
+      : '<div class="ds-state" title="Assign this scouter a campaign under Scouter accounts">No campaign</div>';
+  }
+
   function scoutEntryRow(e) {
     var busy = state.scoutBusyId === e.id;
     var who = e.scout ? e.scout.displayName || e.scout.username : '—';
@@ -2019,7 +2051,7 @@
       : '<span class="sheet-handle sheet-handle-warn">no handle</span>';
 
     var promote = e.promotedCreatorId
-      ? '<span class="promoted-tag">In Creator DB</span>'
+      ? '<span class="promoted-tag">In Creator DB</span>' + dealStudioCell(e)
       : e.qualification === 'QUALIFIED'
         ? '<button class="btn-accent" data-act="scout-promote" data-id="' + esc(e.id) + '"' +
           (busy ? ' disabled' : '') + '>' + (busy ? '…' : 'Promote') + '</button>'
@@ -2048,6 +2080,71 @@
     );
   }
 
+  function loadDealStudioCampaigns() {
+    scoutApi('/deal-studio/campaigns')
+      .then(function (res) {
+        state.dsCampaigns = res || { configured: false, campaigns: [] };
+        render();
+      })
+      .catch(function (err) {
+        state.dsCampaigns = { configured: true, campaigns: [], error: err.message };
+        render();
+      });
+  }
+
+  function campaignLabel(c) {
+    if (!c.brandName || c.brandName === c.name) return c.name;
+    return c.brandName + ' — ' + c.name;
+  }
+
+  /**
+   * Which Deal Studio campaign a scouter works for. A creator promoted from
+   * their sheet lands on that campaign's page in Deal Studio.
+   */
+  function campaignPicker(u) {
+    var ds = state.dsCampaigns;
+    var current = u.dealStudioCampaignId || '';
+    var currentName = u.dealStudioCampaignName || '';
+
+    // Until the list is in, or when it can't be, show the stored assignment
+    // rather than an empty control that looks like "nothing is set".
+    if (!ds || !ds.configured || ds.error) {
+      return currentName
+        ? '<span>' + esc(currentName) + '</span>'
+        : '<span class="sheet-muted">' + (ds ? 'unavailable' : 'loading…') + '</span>';
+    }
+
+    var known = ds.campaigns.some(function (c) { return c.id === current; });
+    var opts = '<option value="">— No campaign —</option>';
+    // An assignment Deal Studio no longer lists stays visible, flagged, so the
+    // admin can see why promotes from this scout are failing.
+    if (current && !known) {
+      opts += '<option value="' + esc(current) + '" selected>' +
+        esc(currentName || current) + ' (no longer in Deal Studio)</option>';
+    }
+    ds.campaigns.forEach(function (c) {
+      opts += '<option value="' + esc(c.id) + '"' + (c.id === current ? ' selected' : '') + '>' +
+        esc(campaignLabel(c)) + '</option>';
+    });
+    return '<select class="scout-select ds-picker" data-act="scout-campaign" data-id="' + esc(u.id) + '"' +
+      (state.dsSavingUser === u.id ? ' disabled' : '') + '>' + opts + '</select>';
+  }
+
+  /** One line under the scouter table explaining an empty or broken picker. */
+  function dealStudioHint() {
+    var ds = state.dsCampaigns;
+    if (!ds) return '';
+    if (!ds.configured) {
+      return '<div class="scout-hint">Deal Studio isn\'t connected, so promoted creators only go to the Creator ' +
+        'Database. Set <span class="mono">DEAL_STUDIO_URL</span> and <span class="mono">DEAL_STUDIO_BOT_TOKEN</span> ' +
+        'to pick a campaign for each scouter.</div>';
+    }
+    if (ds.error) {
+      return '<div class="login-err">Couldn\'t load campaigns from Deal Studio: ' + esc(ds.error) + '</div>';
+    }
+    return '<div class="scout-hint">A creator promoted from a scouter\'s sheet is added to their campaign in Deal Studio.</div>';
+  }
+
   function scoutAccountsPanel() {
     if (!state.scoutAccountsOpen) return '';
     var rows = (state.scoutUsers || []).map(function (u) {
@@ -2067,6 +2164,7 @@
         '<td>' + esc(u.displayName || '—') + '</td>' +
         '<td class="mono">' + esc(u.username) + '</td>' +
         '<td>' + ig + '</td>' +
+        '<td>' + campaignPicker(u) + '</td>' +
         '<td class="sheet-center">' + esc(u.entryCount || 0) + '</td>' +
         '<td class="sheet-center">' +
           (u.isActive ? '<span class="promoted-tag">Active</span>' : '<span class="sheet-muted">Disabled</span>') +
@@ -2096,9 +2194,10 @@
       (state.scoutAccountError ? '<div class="login-err">' + esc(state.scoutAccountError) + '</div>' : '') +
       '<div class="scout-hint">Scouters sign in at <span class="mono">/scout</span> and only ever see their own sheet. ' +
       'They connect their own Instagram there, which is what files links they DM to the company account onto their sheet.</div>' +
+      dealStudioHint() +
       (rows
         ? '<div class="sheet-wrap"><table class="sheet"><thead><tr><th>Name</th><th>Username</th>' +
-          '<th class="col-ig">Instagram</th>' +
+          '<th class="col-ig">Instagram</th><th class="col-ds">Deal Studio campaign</th>' +
           '<th class="sheet-center">Rows</th><th class="sheet-center">Status</th><th class="sheet-center">Actions</th>' +
           '</tr></thead><tbody>' + rows + '</tbody></table></div>'
         : '<div class="empty-s">No scouter accounts yet.</div>') +
@@ -2148,6 +2247,21 @@
 
     var who = '@' + e.instagramUsername;
 
+    // Where in Deal Studio they'll land. Said before the click, because it adds
+    // them to a live campaign's outreach list — and a scouter with no campaign
+    // is exactly the case an admin would want to fix first, not discover after.
+    var ds = state.dsCampaigns;
+    var dsOff = ds && !ds.configured;
+    var campaign = e.scout && e.scout.dealStudioCampaignName;
+    var dsPoint = dsOff
+      ? ''
+      : campaign
+        ? '<li>They\'re also added to <strong>' + esc(campaign) + '</strong> in Deal Studio, ' +
+          'ready for outreach.</li>'
+        : '<li class="promote-warn">' + esc(scout) + ' has no Deal Studio campaign, so they\'ll only ' +
+          'go to the Creator Database. Set one under <em>Scouter accounts</em> to send them to a campaign.</li>';
+    var confirmLabel = !dsOff && campaign ? 'Add to Creator DB + Deal Studio' : 'Add to Creator Database';
+
     return (
       '<div class="modal-overlay" data-act="promote-backdrop">' +
       '<div class="modal promote-modal" role="dialog" aria-labelledby="promote-title" aria-modal="true">' +
@@ -2164,6 +2278,7 @@
       '<li>If they are already in the database, their existing record is updated — ' +
       'never duplicated.</li>' +
       '<li>' + esc(scout) + ' is credited as the manager who found them.</li>' +
+      dsPoint +
       '</ul>' +
       err +
       '<div class="promote-actions">' +
@@ -2171,7 +2286,7 @@
       (state.promoting ? ' disabled' : '') + '>Cancel</button>' +
       '<button class="btn-accent" data-act="promote-confirm"' +
       (state.promoting ? ' disabled' : '') + '>' +
-      (state.promoting ? 'Adding…' : 'Add to Creator Database') +
+      (state.promoting ? 'Adding…' : confirmLabel) +
       '</button>' +
       '</div>' +
       '</div></div></div>'
@@ -2192,6 +2307,7 @@
         state.promoting = false;
         state.promoteEntry = null;
         state.promoteError = null;
+        state.dsNotice = dealStudioNotice(res.dealStudio, res.entry);
         refreshScoutRow(res.entry);
       })
       .catch(function (err) {
@@ -2202,6 +2318,37 @@
   }
 
 
+
+  /**
+   * A line above the table when the Deal Studio half of a promote needs the
+   * admin: it failed, or the scouter had no campaign. A success needs no
+   * announcement — the row itself says where the creator went.
+   */
+  function dealStudioNotice(outcome, entry) {
+    if (!outcome) return null;
+    var who = entry && entry.instagramUsername ? '@' + entry.instagramUsername : 'This creator';
+    if (outcome.status === 'failed') {
+      return { bad: true, text: who + ' is in the Creator Database, but couldn\'t be added to Deal Studio: ' +
+        (outcome.error || 'unknown error') + '. Use Retry on the row.' };
+    }
+    if (outcome.status === 'no_campaign') {
+      return { bad: false, text: who + ' is in the Creator Database only — their scouter has no Deal Studio ' +
+        'campaign. Assign one under Scouter accounts, then use “Send to Deal Studio” on the row.' };
+    }
+    return null;
+  }
+
+  function dsNoticeBanner() {
+    var n = state.dsNotice;
+    if (!n) return '';
+    return (
+      '<div class="ig-unmatched' + (n.bad ? ' ig-unmatched-bad' : '') + '">' +
+      '<span class="ig-unmatched-dot"></span>' +
+      '<span>' + esc(n.text) + '</span>' +
+      '<button class="link-btn" data-act="ds-notice-close" aria-label="Dismiss">Dismiss</button>' +
+      '</div>'
+    );
+  }
 
   /**
    * One line, only when there's something to say: links arrived from an
@@ -2390,7 +2537,7 @@
       // click and notes save, and restarting the entrance animation each time
       // makes the whole table flash.
       '<div class="app">' + topbar() +
-      '<div class="page list">' + head + igSyncNotice() + igHealthNotice() + igUnmatchedNotice() + scoutAccountsPanel() + toolbar + body + '</div></div>' +
+      '<div class="page list">' + head + dsNoticeBanner() + igSyncNotice() + igHealthNotice() + igUnmatchedNotice() + scoutAccountsPanel() + toolbar + body + '</div></div>' +
       promoteModal()
     );
   }
@@ -2444,7 +2591,10 @@
       state.scoutAccountsOpen = !state.scoutAccountsOpen;
       state.scoutAccountError = '';
       render();
-      if (state.scoutAccountsOpen) loadScoutUsers();
+      if (state.scoutAccountsOpen) {
+        loadScoutUsers();
+        loadDealStudioCampaigns();
+      }
       return;
     }
 
@@ -2483,6 +2633,30 @@
       // Only when the click landed on the backdrop itself, not the dialog.
       if (e.target.closest('.modal')) return;
       return closePromote();
+    }
+
+    if (e.target.closest('[data-act="ds-notice-close"]')) {
+      setState({ dsNotice: null });
+      return;
+    }
+
+    var dsSend = e.target.closest('[data-act="scout-ds-send"]');
+    if (dsSend) {
+      var did = dsSend.getAttribute('data-id');
+      if (state.scoutDsBusyId) return;
+      setState({ scoutDsBusyId: did });
+      scoutApi('/scouts/entries/' + encodeURIComponent(did) + '/deal-studio', { method: 'POST' })
+        .then(function (res) {
+          state.scoutDsBusyId = null;
+          state.dsNotice = dealStudioNotice(res.dealStudio, res.entry);
+          refreshScoutRow(res.entry);
+        })
+        .catch(function (err) {
+          state.scoutDsBusyId = null;
+          if (err.message === 'unauthorized') return;
+          setState({ dsNotice: { bad: true, text: err.message } });
+        });
+      return;
     }
 
     var toggle = e.target.closest('[data-act="scout-toggle"]');
@@ -2526,6 +2700,34 @@
     if (fq) { state.scoutFilterQual = fq.value; loadScouts(); return; }
     var srch = e.target.closest('[data-act="scout-search"]');
     if (srch) { state.scoutSearch = srch.value; loadScouts(); return; }
+
+    var pick = e.target.closest('[data-act="scout-campaign"]');
+    if (pick) {
+      var uid = pick.getAttribute('data-id');
+      setState({ dsSavingUser: uid, scoutAccountError: '' });
+      scoutApi('/users/' + encodeURIComponent(uid), {
+        method: 'PATCH',
+        body: { dealStudioCampaignId: pick.value }
+      })
+        .then(function (updated) {
+          state.dsSavingUser = null;
+          state.scoutUsers = (state.scoutUsers || []).map(function (u) {
+            return u.id === uid ? Object.assign({}, u, updated) : u;
+          });
+          render();
+          // Rows show their scouter's campaign in the promote dialog and the
+          // "Send to Deal Studio" button, so they need the new assignment too.
+          loadScouts();
+        })
+        .catch(function (err) {
+          state.dsSavingUser = null;
+          if (err.message === 'unauthorized') return;
+          // The server refused, so the stored assignment is unchanged — re-render
+          // to put the picker back on it.
+          setState({ scoutAccountError: err.message });
+        });
+      return;
+    }
 
     var notes = e.target.closest('[data-act="scout-notes"]');
     if (notes) {

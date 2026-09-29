@@ -8,6 +8,10 @@ import {
 import { Prisma, User, UserRole } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { hashPassword, verifyPassword } from '../../common/utils/password';
+import {
+  DealStudioCampaign,
+  DealStudioService,
+} from '../../integrations/deal-studio/deal-studio.service';
 
 /** A user as returned by the API — never includes the password hash. */
 export interface SafeUser {
@@ -22,6 +26,9 @@ export interface SafeUser {
   instagramHandle: string | null;
   /** True once we've seen a message from them and cached their Instagram id. */
   instagramLinked: boolean;
+  /** Deal Studio campaign this scout's promoted creators are added to. */
+  dealStudioCampaignId: string | null;
+  dealStudioCampaignName: string | null;
   entryCount?: number;
 }
 
@@ -41,6 +48,8 @@ function toSafe(user: User & { _count?: { scoutEntries: number } }): SafeUser {
     createdAt: user.createdAt,
     instagramHandle: user.instagramHandle,
     instagramLinked: !!user.instagramUserId,
+    dealStudioCampaignId: user.dealStudioCampaignId,
+    dealStudioCampaignName: user.dealStudioCampaignName,
     ...(user._count ? { entryCount: user._count.scoutEntries } : {}),
   };
 }
@@ -56,7 +65,10 @@ function toSafe(user: User & { _count?: { scoutEntries: number } }): SafeUser {
 export class UsersService {
   private readonly logger = new Logger(UsersService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly dealStudio: DealStudioService,
+  ) {}
 
   private normalizeUsername(raw: string): string {
     const username = String(raw ?? '')
@@ -158,6 +170,7 @@ export class UsersService {
       isActive?: boolean;
       password?: string;
       instagramHandle?: string | null;
+      dealStudioCampaignId?: string | null;
     },
   ): Promise<SafeUser> {
     const existing = await this.prisma.user.findUnique({ where: { id } });
@@ -179,6 +192,17 @@ export class UsersService {
       // otherwise the old account would keep writing to this scout's sheet.
       if (handle !== existing.instagramHandle) data.instagramUserId = null;
     }
+    if (input.dealStudioCampaignId !== undefined) {
+      const campaignId = input.dealStudioCampaignId?.trim() || null;
+      if (!campaignId) {
+        data.dealStudioCampaignId = null;
+        data.dealStudioCampaignName = null;
+      } else {
+        const campaign = await this.findDealStudioCampaign(campaignId);
+        data.dealStudioCampaignId = campaign.id;
+        data.dealStudioCampaignName = this.campaignLabel(campaign);
+      }
+    }
 
     try {
       const user = await this.prisma.user.update({ where: { id }, data });
@@ -189,6 +213,36 @@ export class UsersService {
       }
       throw err;
     }
+  }
+
+  /**
+   * Look a campaign up in Deal Studio. Resolving it there rather than accepting
+   * a name from the browser means the stored name is always Deal Studio's own,
+   * and an id that doesn't exist is refused now instead of failing at promote.
+   */
+  private async findDealStudioCampaign(id: string): Promise<DealStudioCampaign> {
+    if (!this.dealStudio.isConfigured()) {
+      throw new BadRequestException(
+        'Deal Studio is not connected — set DEAL_STUDIO_URL and DEAL_STUDIO_BOT_TOKEN first',
+      );
+    }
+    let campaigns: DealStudioCampaign[];
+    try {
+      campaigns = await this.dealStudio.listCampaigns();
+    } catch (err) {
+      throw new BadRequestException(
+        `Could not load campaigns from Deal Studio: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    const campaign = campaigns.find((c) => c.id === id);
+    if (!campaign) throw new BadRequestException('That campaign does not exist in Deal Studio');
+    return campaign;
+  }
+
+  /** "Brand — Campaign", or just the campaign when they're the same. */
+  private campaignLabel(c: DealStudioCampaign): string {
+    if (!c.brandName || c.brandName === c.name) return c.name;
+    return `${c.brandName} — ${c.name}`;
   }
 
   /** Delete an account. Their scouting rows cascade away with them. */

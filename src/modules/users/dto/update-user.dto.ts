@@ -22,4 +22,14 @@ export class UpdateUserDto {
   @IsString()
   @MaxLength(200)
   instagramHandle?: string;
+
+  /**
+   * The Deal Studio campaign this scout works for. Empty string clears it. Only
+   * the id is accepted: the name is looked up from Deal Studio, which also
+   * confirms the campaign exists.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  dealStudioCampaignId?: string;
 }
