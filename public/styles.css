@@ -2336,3 +2336,36 @@ table.sheet tbody tr:hover td.sheet-ro {
   overflow: auto;
   color: var(--text);
 }
+
+/* --- Deal Studio link on the Scouts page -------------------------------- */
+
+.col-ds {
+  width: 230px;
+}
+
+.ds-picker {
+  max-width: 220px;
+}
+
+/* Where a promoted row went in Deal Studio, under the "In Creator DB" tag. */
+.ds-state {
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.ds-ok {
+  color: var(--risk-low-fg);
+  font-weight: 600;
+}
+
+.ds-bad {
+  color: var(--risk-high-fg);
+  font-weight: 600;
+  cursor: help;
+}
+
+.promote-points li.promote-warn {
+  color: var(--st-review-fg);
+}

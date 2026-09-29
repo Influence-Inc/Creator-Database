@@ -35,6 +35,11 @@ export interface AppConfig {
     botToken: string;
     timeoutMs: number;
   };
+  dealStudio: {
+    apiUrl: string | null;
+    botToken: string;
+    timeoutMs: number;
+  };
   instagramDm: {
     verifyToken: string;
     appSecret: string;
@@ -120,6 +125,14 @@ export default (): AppConfig => ({
     // Shared secret sent as `x-bot-token`; must equal influence-stats' BOT_TOKEN.
     botToken: process.env.STATS_BOT_TOKEN ?? '',
     timeoutMs: parseIntOr(process.env.STATS_TIMEOUT_MS, 20000),
+  },
+  dealStudio: {
+    // Base URL of the Outreach backend that serves Deal Studio. When unset,
+    // promoting a scouted creator only adds them to the Creator Database.
+    apiUrl: (process.env.DEAL_STUDIO_URL || '').replace(/\/$/, '') || null,
+    // Sent as `x-bot-token`; must equal the Outreach backend's OUTREACH_BOT_TOKEN.
+    botToken: process.env.DEAL_STUDIO_BOT_TOKEN ?? '',
+    timeoutMs: parseIntOr(process.env.DEAL_STUDIO_TIMEOUT_MS, 15000),
   },
   instagramDm: {
     // Shared with Meta when the webhook subscription is created; echoed back on

@@ -4,6 +4,10 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { normalizeInstagram } from '../../common/utils/normalize';
 import { AuthPrincipal } from '../auth/auth.service';
 import { CreatorsService } from '../creators/creators.service';
+import {
+  DealStudioError,
+  DealStudioService,
+} from '../../integrations/deal-studio/deal-studio.service';
 
 /** Fields a scout may set on their own rows. */
 export interface ScoutEditableInput {
@@ -22,7 +26,16 @@ export interface ScoutReviewInput {
 }
 
 const ENTRY_INCLUDE = {
-  scout: { select: { id: true, username: true, displayName: true } },
+  scout: {
+    select: {
+      id: true,
+      username: true,
+      displayName: true,
+      // Shown in the promote confirmation: where this creator is about to go.
+      dealStudioCampaignId: true,
+      dealStudioCampaignName: true,
+    },
+  },
   reviewedBy: { select: { id: true, username: true, displayName: true } },
   promotedCreator: { select: { id: true, creatorName: true, instagramUsername: true } },
 } satisfies Prisma.ScoutEntryInclude;
@@ -43,6 +56,7 @@ export class ScoutsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly creators: CreatorsService,
+    private readonly dealStudio: DealStudioService,
   ) {}
 
   /** The scout whose rows this principal may act on, or null for an admin. */
@@ -264,15 +278,136 @@ export class ScoutsService {
       throw new ForbiddenException('Could not create a creator from this row');
     }
 
-    const updated = await this.prisma.scoutEntry.update({
+    await this.prisma.scoutEntry.update({
       where: { id },
       data: { promotedCreatorId: result.creator.id, promotedAt: new Date() },
-      include: ENTRY_INCLUDE,
     });
     this.logger.log(
       `Promoted scouting row ${entry.rowNumber} (@${entry.instagramUsername}) to creator ${result.creator.id}`,
     );
-    return { entry: updated, creatorId: result.creator.id, created: result.created };
+
+    // After the Creator Database write, never instead of it: the two systems
+    // can't commit together, so the local record is the one that must not be
+    // lost. A Deal Studio failure is recorded on the row and retried from there.
+    const dealStudio = await this.sendToDealStudio(id, result.creator.creatorName ?? null);
+
+    const updated = await this.prisma.scoutEntry.findUniqueOrThrow({
+      where: { id },
+      include: ENTRY_INCLUDE,
+    });
+    return { entry: updated, creatorId: result.creator.id, created: result.created, dealStudio };
+  }
+
+  /**
+   * Admin-only: retry adding an already-promoted row to Deal Studio, after a
+   * failure or once its scout has been given a campaign.
+   */
+  async retryDealStudio(id: string, principal: AuthPrincipal) {
+    if (principal.role !== UserRole.ADMIN) {
+      throw new ForbiddenException('Only an admin can send a creator to Deal Studio');
+    }
+    const entry = await this.prisma.scoutEntry.findUnique({
+      where: { id },
+      include: { promotedCreator: { select: { creatorName: true } } },
+    });
+    if (!entry) throw new NotFoundException('Scouting row not found');
+    if (!entry.promotedCreatorId) {
+      throw new ForbiddenException('Promote this row to the Creator Database first');
+    }
+    const dealStudio = await this.sendToDealStudio(id, entry.promotedCreator?.creatorName ?? null);
+    const updated = await this.prisma.scoutEntry.findUniqueOrThrow({
+      where: { id },
+      include: ENTRY_INCLUDE,
+    });
+    return { entry: updated, dealStudio };
+  }
+
+  /**
+   * Add a promoted row's creator to its scout's Deal Studio campaign, and record
+   * how that went on the row. Never throws: the outcome is data for the admin to
+   * see, and a failure here must not undo a promote that already succeeded.
+   *
+   * One row goes to one campaign. Once added, it isn't sent again even if the
+   * scout is later reassigned — reassigning is about future finds, and silently
+   * copying past ones into a second campaign would surprise whoever runs it.
+   * Until it has been added, it goes to the scout's campaign as of now, so an
+   * admin can fix a missing or deleted campaign and then retry.
+   */
+  private async sendToDealStudio(
+    entryId: string,
+    fullName: string | null,
+  ): Promise<DealStudioOutcome> {
+    const entry = await this.prisma.scoutEntry.findUniqueOrThrow({
+      where: { id: entryId },
+      include: {
+        scout: {
+          select: {
+            username: true,
+            displayName: true,
+            dealStudioCampaignId: true,
+            dealStudioCampaignName: true,
+          },
+        },
+      },
+    });
+
+    if (entry.dealStudioAddedAt) {
+      return { status: 'already_added', campaignName: entry.dealStudioCampaignName };
+    }
+    if (!this.dealStudio.isConfigured()) {
+      return { status: 'not_configured' };
+    }
+    const campaignId = entry.scout.dealStudioCampaignId;
+    if (!campaignId || !entry.instagramUsername) {
+      return { status: 'no_campaign' };
+    }
+
+    try {
+      const res = await this.dealStudio.addScoutedCreator({
+        campaignId,
+        instagramUsername: entry.instagramUsername,
+        fullName,
+        scoutName: entry.scout.displayName || entry.scout.username,
+        reelLinks: reelLinksIn(entry.reelIdeas),
+        sourceRef: entry.id,
+      });
+      const campaignName = campaignLabel(res.campaign) || entry.scout.dealStudioCampaignName;
+      await this.prisma.scoutEntry.update({
+        where: { id: entryId },
+        data: {
+          dealStudioCampaignId: campaignId,
+          dealStudioCampaignName: campaignName,
+          dealStudioCreatorId: res.creatorId,
+          dealStudioAddedAt: new Date(),
+          dealStudioError: null,
+        },
+      });
+      this.logger.log(
+        `Added @${entry.instagramUsername} to Deal Studio campaign "${campaignName}" (creator ${res.creatorId}${res.created ? '' : ', already there'})`,
+      );
+      return {
+        status: res.created ? 'added' : 'already_in_campaign',
+        campaignName,
+        creatorId: res.creatorId,
+      };
+    } catch (err) {
+      const message =
+        err instanceof DealStudioError && err.status === 404
+          ? `The campaign "${entry.scout.dealStudioCampaignName ?? campaignId}" no longer exists in Deal Studio — assign the scout a new one, then retry`
+          : err instanceof Error
+            ? err.message
+            : String(err);
+      await this.prisma.scoutEntry.update({
+        where: { id: entryId },
+        data: {
+          dealStudioCampaignId: campaignId,
+          dealStudioCampaignName: entry.scout.dealStudioCampaignName,
+          dealStudioError: message,
+        },
+      });
+      this.logger.warn(`Could not add @${entry.instagramUsername} to Deal Studio: ${message}`);
+      return { status: 'failed', campaignName: entry.scout.dealStudioCampaignName, error: message };
+    }
   }
 
   /** Admin dashboard counters. */
@@ -285,4 +420,36 @@ export class ScoutsService {
     for (const row of byStatus) counts[row.qualification] = row._count._all;
     return { total: totals, ...counts };
   }
+}
+
+/** What happened when a promoted creator was sent to Deal Studio. */
+export interface DealStudioOutcome {
+  status:
+    'added' | 'already_in_campaign' | 'already_added' | 'no_campaign' | 'not_configured' | 'failed';
+  campaignName?: string | null;
+  creatorId?: number;
+  error?: string;
+}
+
+/** "Brand — Campaign", or just the campaign when they're the same. */
+function campaignLabel(c: { name?: string; brandName?: string } | undefined): string | null {
+  if (!c?.name) return null;
+  if (!c.brandName || c.brandName === c.name) return c.name;
+  return `${c.brandName} — ${c.name}`;
+}
+
+/**
+ * The reel links in a scout's free-text "reels to replicate" field. Only actual
+ * URLs are sent — the prose around them is the scout's shorthand, not something
+ * the campaign's outreach needs.
+ */
+export function reelLinksIn(text: string | null | undefined): string[] {
+  if (!text) return [];
+  const found = text.match(/https?:\/\/[^\s<>"')]+/gi) ?? [];
+  const out: string[] = [];
+  for (const raw of found) {
+    const url = raw.replace(/[.,;:!?]+$/, '');
+    if (!out.includes(url)) out.push(url);
+  }
+  return out;
 }

@@ -447,6 +447,13 @@ model User {
   /// time a message is matched and used directly afterwards.
   instagramUserId String? @unique
 
+  /// The Deal Studio campaign this scout is working for, set by an admin. A
+  /// creator promoted from this scout's sheet is added to that campaign.
+  dealStudioCampaignId   String?
+  /// Its name as Deal Studio reported it when assigned — kept so the console can
+  /// show the assignment without calling Deal Studio on every page load.
+  dealStudioCampaignName String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -502,6 +509,18 @@ model ScoutEntry {
   promotedCreatorId String?
   promotedCreator   Creator?  @relation(fields: [promotedCreatorId], references: [id], onDelete: SetNull)
   promotedAt        DateTime?
+
+  /// Where a promote sent this creator in Deal Studio. Recorded per row rather
+  /// than read from the scout, because the scout's campaign can change later and
+  /// this is where the creator actually went.
+  dealStudioCampaignId   String?
+  dealStudioCampaignName String?
+  /// Deal Studio's own creator id once the add succeeded.
+  dealStudioCreatorId    Int?
+  dealStudioAddedAt      DateTime?
+  /// Why the last attempt failed, cleared on success. The Creator Database
+  /// record is kept either way, so a failure here is retried, not rolled back.
+  dealStudioError        String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

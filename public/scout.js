@@ -293,6 +293,7 @@
       '<div class="page-sub">' + state.rows.length +
         ' row' + (state.rows.length === 1 ? '' : 's') +
         ' · only you and an admin can see this sheet</div>' +
+      campaignLine() +
       igSetting() + '</div>' +
       '<button class="btn-add" data-act="add"' + (state.adding ? ' disabled' : '') + '>' +
       (state.adding ? 'Adding…' : '+ Add row') +
@@ -500,11 +501,18 @@
     );
   }
 
+  /** The campaign an admin assigned this scout to, when there is one. */
+  function campaignLine() {
+    if (!state.campaignName) return '';
+    return '<div class="page-sub">Scouting for <strong>' + esc(state.campaignName) + '</strong></div>';
+  }
+
   function loadMe() {
     api('/scouts/me')
       .then(function (me) {
         state.igHandle = me.instagramHandle || null;
         state.igLinked = !!me.instagramLinked;
+        state.campaignName = me.dealStudioCampaignName || null;
         render();
       })
       .catch(function () {
