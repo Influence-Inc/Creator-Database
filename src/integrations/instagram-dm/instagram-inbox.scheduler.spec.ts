@@ -7,14 +7,14 @@ function make(settings: Record<string, unknown>, sync = jest.fn()) {
   const config = {
     get: jest.fn((key: string) => settings[key]),
   } as unknown as ConfigService;
-  const registry = { addCronJob: jest.fn() } as unknown as SchedulerRegistry;
+  const registry = { addInterval: jest.fn() } as unknown as SchedulerRegistry;
   const dm = { syncInbox: sync } as unknown as InstagramDmService;
   return { s: new InstagramInboxScheduler(config, registry, dm), registry, dm };
 }
 
 const ON = {
   'jobs.enableScheduler': true,
-  'jobs.cronInstagramInbox': '*/2 * * * *',
+  'jobs.instagramPollSeconds': 35,
   'instagramDm.accessToken': 'tok',
 };
 
@@ -22,23 +22,45 @@ describe('InstagramInboxScheduler', () => {
   it('registers the poll when scheduling and a token are both in place', () => {
     const { s, registry } = make(ON);
     s.onModuleInit();
-    expect(registry.addCronJob).toHaveBeenCalledWith('instagram-inbox', expect.anything());
-    // Started for real, so stop it — a live cron timer would keep Jest alive.
-    const [, job] = (registry.addCronJob as jest.Mock).mock.calls[0] as [string, { stop(): void }];
-    job.stop();
+    expect(registry.addInterval).toHaveBeenCalledWith('instagram-inbox', expect.anything());
+    // Started for real, so clear it — a live timer would keep Jest alive.
+    const [, handle] = (registry.addInterval as jest.Mock).mock.calls[0] as [
+      string,
+      NodeJS.Timeout,
+    ];
+    clearInterval(handle);
+  });
+
+  it('polls every 35 seconds', () => {
+    jest.useFakeTimers();
+    const sync = jest.fn().mockResolvedValue({ ok: true, filed: 0, unmatched: 0 });
+    const { s, registry } = make(ON, sync);
+    s.onModuleInit();
+
+    jest.advanceTimersByTime(34_999);
+    expect(sync).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(1);
+    expect(sync).toHaveBeenCalledTimes(1);
+
+    const [, handle] = (registry.addInterval as jest.Mock).mock.calls[0] as [
+      string,
+      NodeJS.Timeout,
+    ];
+    clearInterval(handle);
+    jest.useRealTimers();
   });
 
   it('does not register when scheduling is off', () => {
     const { s, registry } = make({ ...ON, 'jobs.enableScheduler': false });
     s.onModuleInit();
-    expect(registry.addCronJob).not.toHaveBeenCalled();
+    expect(registry.addInterval).not.toHaveBeenCalled();
   });
 
   it('does not register without a token, rather than failing every tick', () => {
     const { s, registry } = make({ ...ON, 'instagramDm.accessToken': '' });
     s.onModuleInit();
     // Nothing to poll with: a job that errors every two minutes is just noise.
-    expect(registry.addCronJob).not.toHaveBeenCalled();
+    expect(registry.addInterval).not.toHaveBeenCalled();
   });
 
   it('skips a tick while the previous poll is still running', async () => {
