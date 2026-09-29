@@ -59,6 +59,8 @@
     // Deal Studio campaigns for the scouter picker: { configured, campaigns, error }.
     dsCampaigns: null,
     dsSavingUser: null,
+    // Scouter whose campaign cell is open for editing.
+    dsEditingUser: null,
     scoutDsBusyId: null,
     // Outcome of the last promote's Deal Studio step, when it needs attention.
     dsNotice: null,
@@ -2085,6 +2087,11 @@
       .then(function (res) {
         state.dsCampaigns = res || { configured: false, campaigns: [] };
         render();
+        // A cell clicked while the list was loading gets its dropdown now.
+        if (state.dsEditingUser !== null) {
+          var sel = document.querySelector('select[data-act="scout-campaign"][data-id="' + state.dsEditingUser + '"]');
+          if (sel) sel.focus();
+        }
       })
       .catch(function (err) {
         state.dsCampaigns = { configured: true, campaigns: [], error: err.message };
@@ -2100,18 +2107,37 @@
   /**
    * Which Deal Studio campaign a scouter works for. A creator promoted from
    * their sheet lands on that campaign's page in Deal Studio.
+   *
+   * Reads as plain text until clicked, so the table stays calm to scan; the
+   * dropdown only appears on the one row being edited.
    */
   function campaignPicker(u) {
-    var ds = state.dsCampaigns;
     var current = u.dealStudioCampaignId || '';
     var currentName = u.dealStudioCampaignName || '';
 
-    // Until the list is in, or when it can't be, show the stored assignment
-    // rather than an empty control that looks like "nothing is set".
-    if (!ds || !ds.configured || ds.error) {
-      return currentName
-        ? '<span>' + esc(currentName) + '</span>'
-        : '<span class="sheet-muted">' + (ds ? 'unavailable' : 'loading…') + '</span>';
+    if (state.dsEditingUser !== u.id) {
+      return '<button type="button" class="ds-cell" data-act="scout-campaign-edit" data-id="' + esc(u.id) + '"' +
+        ' title="Click to set this scouter\'s campaign">' +
+        (currentName
+          ? '<span class="ds-cell-name">' + esc(currentName) + '</span>'
+          : '<span class="sheet-muted">Set campaign</span>') +
+        '<span class="ds-cell-caret" aria-hidden="true">▾</span>' +
+        '</button>';
+    }
+
+    // Being edited. Say why when there is nothing to pick from, in the cell the
+    // admin just clicked, rather than leaving the click to do nothing.
+    var ds = state.dsCampaigns;
+    if (!ds) return '<span class="sheet-muted">Loading campaigns…</span>';
+    if (!ds.configured) {
+      return '<span class="ds-cell-msg">Deal Studio isn\'t connected yet — see the note above.</span>';
+    }
+    if (ds.error) {
+      return '<span class="ds-cell-msg">Couldn\'t load campaigns. ' +
+        '<button type="button" class="link-btn" data-act="ds-reload">Try again</button></span>';
+    }
+    if (!ds.campaigns.length && !current) {
+      return '<span class="ds-cell-msg">Deal Studio has no campaigns yet.</span>';
     }
 
     var known = ds.campaigns.some(function (c) { return c.id === current; });
@@ -2128,6 +2154,23 @@
     });
     return '<select class="scout-select ds-picker" data-act="scout-campaign" data-id="' + esc(u.id) + '"' +
       (state.dsSavingUser === u.id ? ' disabled' : '') + '>' + opts + '</select>';
+  }
+
+  /** Open the campaign dropdown for one scouter, focused and ready to pick. */
+  function editCampaign(uid) {
+    setState({ dsEditingUser: uid, scoutAccountError: '' });
+    // Fetch on demand if the list isn't in yet (or failed last time).
+    if (!state.dsCampaigns || state.dsCampaigns.error) loadDealStudioCampaigns();
+    var sel = document.querySelector('select[data-act="scout-campaign"][data-id="' + uid + '"]');
+    if (!sel) return;
+    sel.focus();
+    // Open the list straight away, so it's one click to change, not two.
+    try { if (typeof sel.showPicker === 'function') sel.showPicker(); } catch (err) { /* needs a user gesture in some browsers */ }
+  }
+
+  function stopEditingCampaign() {
+    if (state.dsEditingUser === null) return;
+    setState({ dsEditingUser: null });
   }
 
   /** One line under the scouter table explaining an empty or broken picker. */
@@ -2164,7 +2207,7 @@
         '<td>' + esc(u.displayName || '—') + '</td>' +
         '<td class="mono">' + esc(u.username) + '</td>' +
         '<td>' + ig + '</td>' +
-        '<td>' + campaignPicker(u) + '</td>' +
+        '<td class="col-ds-cell">' + campaignPicker(u) + '</td>' +
         '<td class="sheet-center">' + esc(u.entryCount || 0) + '</td>' +
         '<td class="sheet-center">' +
           (u.isActive ? '<span class="promoted-tag">Active</span>' : '<span class="sheet-muted">Disabled</span>') +
@@ -2197,7 +2240,7 @@
       dealStudioHint() +
       (rows
         ? '<div class="sheet-wrap"><table class="sheet"><thead><tr><th>Name</th><th>Username</th>' +
-          '<th class="col-ig">Instagram</th><th class="col-ds">Deal Studio campaign</th>' +
+          '<th class="col-ig">Instagram</th><th class="col-ds">Campaign Name</th>' +
           '<th class="sheet-center">Rows</th><th class="sheet-center">Status</th><th class="sheet-center">Actions</th>' +
           '</tr></thead><tbody>' + rows + '</tbody></table></div>'
         : '<div class="empty-s">No scouter accounts yet.</div>') +
@@ -2635,6 +2678,22 @@
       return closePromote();
     }
 
+    var campEdit = e.target.closest('[data-act="scout-campaign-edit"]');
+    if (campEdit) {
+      editCampaign(campEdit.getAttribute('data-id'));
+      return;
+    }
+    if (e.target.closest('[data-act="ds-reload"]')) {
+      state.dsCampaigns = null;
+      render();
+      loadDealStudioCampaigns();
+      return;
+    }
+    // A click anywhere outside the open cell closes it without saving.
+    if (state.dsEditingUser !== null && !e.target.closest('.col-ds-cell')) {
+      stopEditingCampaign();
+    }
+
     if (e.target.closest('[data-act="ds-notice-close"]')) {
       setState({ dsNotice: null });
       return;
@@ -2693,6 +2752,24 @@
     }
   });
 
+  document.addEventListener('keydown', function (e) {
+    // With the native list open the browser uses the first Escape to close it;
+    // this one then leaves the cell.
+    if (e.key === 'Escape' && state.dsEditingUser !== null && !state.dsSavingUser) stopEditingCampaign();
+  });
+
+  // Tabbing or clicking away from an open campaign dropdown puts the cell back.
+  // Deferred a tick so a click that moves to another row's cell is handled by
+  // the click listener first, and skipped mid-save, when re-rendering is what
+  // removed the dropdown.
+  document.addEventListener('focusout', function (e) {
+    if (!e.target.closest || !e.target.closest('[data-act="scout-campaign"]')) return;
+    var uid = e.target.getAttribute('data-id');
+    setTimeout(function () {
+      if (state.dsEditingUser === uid && !state.dsSavingUser) stopEditingCampaign();
+    }, 0);
+  });
+
   document.addEventListener('change', function (e) {
     var fs = e.target.closest('[data-act="scout-filter-scout"]');
     if (fs) { state.scoutFilterScout = fs.value; loadScouts(); return; }
@@ -2711,6 +2788,7 @@
       })
         .then(function (updated) {
           state.dsSavingUser = null;
+          state.dsEditingUser = null;
           state.scoutUsers = (state.scoutUsers || []).map(function (u) {
             return u.id === uid ? Object.assign({}, u, updated) : u;
           });

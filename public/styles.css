@@ -2344,7 +2344,54 @@ table.sheet tbody tr:hover td.sheet-ro {
 }
 
 .ds-picker {
+  width: 100%;
   max-width: 220px;
+}
+
+/* The campaign cell: reads as text, but is visibly a field you can click. */
+.ds-cell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  max-width: 220px;
+  min-height: 32px;
+  padding: 5px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ds-cell:hover,
+.ds-cell:focus-visible {
+  border-color: var(--border);
+  background: var(--surface-alt);
+}
+
+.ds-cell-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ds-cell-caret {
+  flex: none;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.ds-cell-msg {
+  display: block;
+  max-width: 220px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-muted);
 }
 
 /* Where a promoted row went in Deal Studio, under the "In Creator DB" tag. */
