@@ -43,6 +43,9 @@ export interface IngestOutcome {
 export class InstagramDmService {
   private readonly logger = new Logger(InstagramDmService.name);
 
+  /** The connected account itself, cached after the first successful lookup. */
+  private businessAccount: { id: string; username: string } | null = null;
+
   /** When the inbox was last polled, and what it found. */
   private lastInboxSync: { at: Date; detail: string } | null = null;
 
@@ -626,7 +629,11 @@ export class InstagramDmService {
     unmatched: number;
     sample?: unknown;
   }> {
-    const me = await this.graph.me();
+    // The account's own id only changes with the token, and a new token means a
+    // redeploy, so look it up once rather than on every poll — at one poll every
+    // 35 seconds that halves the calls counted against Meta's rate limit.
+    if (!this.businessAccount) this.businessAccount = await this.graph.me();
+    const me = this.businessAccount;
     const res = await this.graph.fetchConversations();
 
     if (!res.ok) {

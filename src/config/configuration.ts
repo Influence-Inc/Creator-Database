@@ -55,7 +55,7 @@ export interface AppConfig {
     cronEmailSync: string;
     cronClaudeExtraction: string;
     cronStatsSync: string;
-    cronInstagramInbox: string;
+    instagramPollSeconds: number;
     upcomingDeadlineDays: number;
   };
 }
@@ -153,8 +153,10 @@ export default (): AppConfig => ({
     cronClaudeExtraction: process.env.CRON_CLAUDE_EXTRACTION ?? '*/10 * * * *',
     cronStatsSync: process.env.CRON_STATS_SYNC ?? '*/30 * * * *',
     // Scouts expect a share to show up on their sheet while they're still
-    // working, so this runs far more often than the mailbox jobs.
-    cronInstagramInbox: process.env.CRON_INSTAGRAM_INBOX ?? '*/2 * * * *',
+    // working, so this runs far more often than the mailbox jobs. A plain
+    // interval rather than cron: cron can't express an even 35-second gap.
+    // Floored at 10s so a typo can't hammer Meta's rate limit.
+    instagramPollSeconds: Math.max(10, parseIntOr(process.env.INSTAGRAM_POLL_SECONDS, 35)),
     upcomingDeadlineDays: parseIntOr(process.env.UPCOMING_DEADLINE_DAYS, 30),
   },
 });

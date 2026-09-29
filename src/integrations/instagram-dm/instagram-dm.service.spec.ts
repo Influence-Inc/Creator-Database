@@ -561,7 +561,7 @@ describe('InstagramDmService.syncInbox', () => {
       lookupUsername: jest.fn().mockResolvedValue('priya.scouts'),
     } as unknown as InstagramGraphService;
 
-    return { svc: new InstagramDmService(prisma, config, graph), prisma };
+    return { svc: new InstagramDmService(prisma, config, graph), prisma, graph };
   }
 
   const convo = (messages: unknown[]) => [{ id: 'c1', messages: { data: messages } }];
@@ -616,6 +616,28 @@ describe('InstagramDmService.syncInbox', () => {
     const out = await svc.syncInbox();
     expect(out.filed).toBe(0);
     expect(out.sample).toMatchObject({ id: 'm1' });
+  });
+
+  it('looks the account up once, not on every poll', async () => {
+    const { svc, graph } = syncDeps(convo([]));
+    await svc.syncInbox();
+    await svc.syncInbox();
+    await svc.syncInbox();
+    // Polling every 35 seconds: a lookup per poll would double the calls
+    // counted against Meta's rate limit for an id that never changes.
+    expect(graph.me).toHaveBeenCalledTimes(1);
+    expect(graph.fetchConversations).toHaveBeenCalledTimes(3);
+  });
+
+  it('retries the account lookup until it succeeds', async () => {
+    const { svc, graph } = syncDeps(convo([]));
+    (graph.me as jest.Mock).mockResolvedValueOnce(null);
+    await svc.syncInbox();
+    await svc.syncInbox();
+    await svc.syncInbox();
+    // A failed lookup must not be cached, or own messages would never be
+    // recognised and skipped again.
+    expect(graph.me).toHaveBeenCalledTimes(2);
   });
 
   it('does not dump a sample on a repeat run where everything is already filed', async () => {
