@@ -154,7 +154,19 @@ export class InstagramDmController {
     const { refiled } = await this.dm.refileDroppedShares();
     const { upgraded } = await this.dm.upgradeReelLinks();
     const res = await this.dm.syncInbox();
-    return { ...res, refiled, upgradedLinks: upgraded };
+    // An empty or failed read is exactly when the admin needs to know why, so
+    // the diagnosis rides along instead of being a separate thing to find.
+    const diagnosis = !res.ok || res.conversations === 0 ? await this.dm.diagnose() : undefined;
+    return { ...res, refiled, upgradedLinks: upgraded, ...(diagnosis ? { diagnosis } : {}) };
+  }
+
+  /** Why DMs aren't arriving, asked of Meta directly. Admin-only; no secrets. */
+  @Public()
+  @UseGuards(SessionGuard)
+  @Roles(UserRole.ADMIN)
+  @Get('diagnose')
+  diagnose() {
+    return this.dm.diagnose();
   }
 
   /** How many links arrived from accounts not linked to any scout. */

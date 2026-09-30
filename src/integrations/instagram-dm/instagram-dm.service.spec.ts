@@ -874,3 +874,135 @@ describe('InstagramDmService.syncInbox', () => {
     expect(out.filed).toBe(1);
   });
 });
+
+describe('InstagramDmService.diagnose', () => {
+  type Reply = { ok: true; body: Record<string, unknown> } | { ok: false; error: string };
+
+  /** A service whose Graph probes answer by path (and version, for inbox reads). */
+  function withMeta(
+    answer: (path: string, version?: string) => Reply,
+    stored = { deliveries: 0, messages: 0 },
+  ) {
+    const prisma = {
+      instagramWebhookDelivery: {
+        count: jest.fn().mockResolvedValue(stored.deliveries),
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+      instagramMessage: { count: jest.fn().mockResolvedValue(stored.messages) },
+    } as unknown as PrismaService;
+    const probe = jest.fn((path: string, _params: unknown, version?: string) =>
+      Promise.resolve(answer(path, version)),
+    );
+    const graph = { probe } as unknown as InstagramGraphService;
+    const config = { get: jest.fn() } as unknown as ConfigService;
+    return { svc: new InstagramDmService(prisma, config, graph), probe };
+  }
+
+  const ME: Reply = {
+    ok: true,
+    body: {
+      id: '1',
+      user_id: '17841458298302705',
+      username: 'influence__inc',
+      account_type: 'BUSINESS',
+    },
+  };
+  const SUBSCRIBED: Reply = { ok: true, body: { data: [{ subscribed_fields: ['messages'] }] } };
+  const EMPTY: Reply = { ok: true, body: { data: [] } };
+  const convoWith = (...names: string[]): Reply => ({
+    ok: true,
+    body: {
+      data: [
+        {
+          participants: {
+            data: [{ username: 'influence__inc' }, ...names.map((username) => ({ username }))],
+          },
+        },
+      ],
+    },
+  });
+
+  it('says plainly when Meta shows an empty inbox, and never blames our settings', async () => {
+    const { svc } = withMeta((path) =>
+      path === '/me' ? ME : path === '/me/subscribed_apps' ? SUBSCRIBED : EMPTY,
+    );
+    const d = await svc.diagnose();
+
+    expect(d.inbox.map((p) => p.conversations)).toEqual([0, 0, 0]);
+    expect(d.verdict[0]).toMatch(/EMPTY inbox for @influence__inc/);
+    expect(d.verdict[1]).toMatch(/Tester invite/);
+    expect(d.verdict.join(' ')).toMatch(/never called the webhook/);
+  });
+
+  it('asks three ways, including by the account id when Meta gives it as a string', async () => {
+    const { svc, probe } = withMeta((path) =>
+      path === '/me' ? ME : path === '/me/subscribed_apps' ? SUBSCRIBED : EMPTY,
+    );
+    await svc.diagnose();
+    const inboxCalls = probe.mock.calls.filter(([path]) => String(path).endsWith('/conversations'));
+    expect(inboxCalls.map(([path, , version]) => [path, version])).toEqual([
+      ['/me/conversations', undefined],
+      ['/me/conversations', 'v23.0'],
+      ['/17841458298302705/conversations', 'v23.0'],
+    ]);
+  });
+
+  it('points at our app when Meta answers one way but not the way the app asks', async () => {
+    const { svc } = withMeta((path, version) => {
+      if (path === '/me') return ME;
+      if (path === '/me/subscribed_apps') return SUBSCRIBED;
+      return version ? convoWith('tharun.fyi') : EMPTY;
+    });
+    const d = await svc.diagnose();
+    expect(d.verdict[0]).toMatch(/DOES return 1 conversation/);
+    expect(d.verdict[0]).toMatch(/problem in our app/);
+    expect(d.inbox[1].participants).toEqual(['@tharun.fyi']);
+  });
+
+  it('lists who is in the inbox when reading works, leaving out the account itself', async () => {
+    const { svc } = withMeta((path) =>
+      path === '/me' ? ME : path === '/me/subscribed_apps' ? SUBSCRIBED : convoWith('tharun.fyi'),
+    );
+    const d = await svc.diagnose();
+    expect(d.verdict[0]).toMatch(/Reading the inbox works/);
+    expect(d.verdict[0]).toMatch(/@tharun\.fyi/);
+    expect(d.verdict[0]).not.toMatch(/@influence__inc/);
+  });
+
+  it('flags an account that is not subscribed to message webhooks', async () => {
+    const { svc } = withMeta((path) =>
+      path === '/me'
+        ? ME
+        : path === '/me/subscribed_apps'
+          ? { ok: true, body: { data: [{ subscribed_fields: ['comments'] }] } }
+          : EMPTY,
+    );
+    const d = await svc.diagnose();
+    expect(d.verdict.join(' ')).toMatch(
+      /not subscribed to message webhooks \(subscribed: comments\)/,
+    );
+  });
+
+  it('stops at a rejected token, since nothing else can be asked', async () => {
+    const { svc } = withMeta((path) =>
+      path === '/me' ? { ok: false, error: 'Error validating access token' } : EMPTY,
+    );
+    const d = await svc.diagnose();
+    expect(d.verdict).toHaveLength(1);
+    expect(d.verdict[0]).toMatch(/rejected the access token/);
+    // Without an account id there is no third way to ask.
+    expect(d.inbox).toHaveLength(2);
+  });
+
+  it('turns a permission error into the permission to add', async () => {
+    const { svc } = withMeta((path) =>
+      path === '/me'
+        ? ME
+        : path === '/me/subscribed_apps'
+          ? SUBSCRIBED
+          : { ok: false, error: '(#10) Application does not have permission for this action' },
+    );
+    const d = await svc.diagnose();
+    expect(d.verdict[0]).toMatch(/instagram_business_manage_messages/);
+  });
+});

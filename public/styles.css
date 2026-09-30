@@ -2319,6 +2319,27 @@ table.sheet tbody tr:hover td.sheet-ro {
   background: var(--risk-high-fg);
 }
 
+/* Why nothing arrived: Meta's own answers, shown with an empty inbox read. */
+.ig-diagnosis {
+  margin: 10px 0 0;
+  color: var(--text);
+}
+
+.ig-diagnosis ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.ig-diagnosis li {
+  margin: 0 0 4px;
+}
+
+.ig-diagnosis-detail {
+  margin-top: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 /* Sample payload shown when messages were read but none could be filed —
    meant to be selected and copied, so it wraps rather than scrolls away. */
 .ig-sample {

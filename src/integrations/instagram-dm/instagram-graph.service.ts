@@ -35,16 +35,30 @@ export class InstagramGraphService implements OnModuleInit {
     return !!this.config.get<string>('instagramDm.accessToken');
   }
 
+  /**
+   * A raw Graph call for diagnosis: `path` on the configured host, optionally
+   * pinned to an API `version` (e.g. "v23.0") instead of whatever the
+   * configured base implies. The token is added here and never returned.
+   */
+  probe(path: string, params: Record<string, string>, version?: string) {
+    return this.get(path, params, version);
+  }
+
   /** Result of a raw Graph call, keeping the error text for diagnosis. */
   private async get(
     path: string,
     params: Record<string, string>,
+    version?: string,
   ): Promise<{ ok: true; body: Record<string, unknown> } | { ok: false; error: string }> {
     const token = this.config.get<string>('instagramDm.accessToken');
     if (!token) return { ok: false, error: 'INSTAGRAM_ACCESS_TOKEN is not set' };
 
-    const base = this.config.get<string>('instagramDm.graphBase') ?? 'https://graph.instagram.com';
-    const url = new URL(`${base.replace(/\/$/, '')}${path}`);
+    let base = (
+      this.config.get<string>('instagramDm.graphBase') ?? 'https://graph.instagram.com'
+    ).replace(/\/$/, '');
+    // Pinning a version replaces any version already on the configured base.
+    if (version) base = `${base.replace(/\/v\d+(\.\d+)?$/, '')}/${version}`;
+    const url = new URL(`${base}${path}`);
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
     url.searchParams.set('access_token', token);
 

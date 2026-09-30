@@ -31,6 +31,105 @@ export interface IngestOutcome {
   entryId?: string | null;
 }
 
+/** Graph API version the diagnosis pins its probes to. */
+export const DIAGNOSE_GRAPH_VERSION = 'v23.0';
+
+/** One way of asking Meta for the inbox, and what came back. */
+export interface InboxProbe {
+  label: string;
+  ok: boolean;
+  conversations: number;
+  /** Other people in those conversations, as @usernames. */
+  participants: string[];
+  error?: string;
+}
+
+export interface InstagramDiagnosis {
+  account:
+    | { ok: true; username: string | null; accountType: string | null; userId: string | null }
+    | { ok: false; error: string };
+  inbox: InboxProbe[];
+  webhookSubscription: { ok: true; fields: string[] } | { ok: false; error: string };
+  webhook: {
+    /** Recorded webhook calls — only rejected or empty ones are logged here. */
+    deliveries: number;
+    /** Messages stored from either route, webhook or inbox read. */
+    storedMessages: number;
+    lastDelivery: { at: Date; outcome: string; detail: string | null } | null;
+  };
+  /** Plain-English findings, most important first. */
+  verdict: string[];
+}
+
+/** Turn the diagnosis findings into sentences an admin can act on. */
+export function diagnosisVerdict(
+  account: InstagramDiagnosis['account'],
+  inbox: InboxProbe[],
+  subscription: InstagramDiagnosis['webhookSubscription'],
+  webhook: InstagramDiagnosis['webhook'],
+): string[] {
+  if (!account.ok) {
+    return [
+      `Meta rejected the access token: "${account.error}". In Meta's dashboard click Generate token on the influence__inc row, and replace INSTAGRAM_ACCESS_TOKEN in Railway with it.`,
+    ];
+  }
+
+  const out: string[] = [];
+  const who = account.username ? `@${account.username}` : 'the connected account';
+
+  if (account.accountType && !['BUSINESS', 'MEDIA_CREATOR'].includes(account.accountType)) {
+    out.push(
+      `${who} is not a professional account (Meta reports "${account.accountType}"). DMs can only be read on a Business or Creator account.`,
+    );
+  }
+
+  const current = inbox[0];
+  const found = inbox.find((p) => p.ok && p.conversations > 0);
+  const failed = inbox.filter((p) => !p.ok);
+  if (found && !(current?.ok && current.conversations > 0)) {
+    out.push(
+      `Meta DOES return ${found.conversations} conversation(s) when asked ${found.label}, but not ${current?.label ?? 'the way the app asks'}. That is a problem in our app, not your setup — send this to the developer.`,
+    );
+  } else if (found) {
+    out.push(
+      `Meta shows ${found.conversations} conversation(s)${found.participants.length ? ` with ${found.participants.join(', ')}` : ''}. Reading the inbox works.`,
+    );
+  } else if (inbox.length > 0 && failed.length === inbox.length) {
+    const error = failed[0].error ?? 'unknown error';
+    out.push(
+      `Meta refused to read ${who}'s inbox: "${error}".` +
+        (/permission|capabilit|scope/i.test(error)
+          ? ' The token is missing the messaging permission: add instagram_business_manage_messages to the app (Meta dashboard → Use cases → Customize), then generate a new token.'
+          : ''),
+    );
+  } else {
+    out.push(
+      `Meta shows this app an EMPTY inbox for ${who}, however it is asked. That is decided on Meta's side — no Railway, webhook or redirect setting changes it.`,
+    );
+    out.push(
+      `The usual reasons Meta hides DMs from an app: (1) the sender's Instagram Tester invite was never accepted — assigning the role only sends an invite; the sender must log in on instagram.com in a browser → Settings → Apps and websites → Tester invites → Accept; (2) the app's Instagram use case lacks the instagram_business_manage_messages permission (Meta dashboard → Use cases → Customize); (3) "Allow access to messages" is off on ${who}.`,
+    );
+  }
+
+  if (subscription.ok && !subscription.fields.includes('messages')) {
+    out.push(
+      `${who} is not subscribed to message webhooks (subscribed: ${subscription.fields.join(', ') || 'nothing'}). In Meta's dashboard, step 2, turn Webhook Subscription On for ${who}.`,
+    );
+  }
+
+  if (webhook.deliveries === 0 && webhook.storedMessages === 0) {
+    out.push('Meta has never called the webhook, and no message has ever been stored.');
+  } else if (webhook.lastDelivery) {
+    out.push(
+      `The last webhook call that was turned away or empty ended "${webhook.lastDelivery.outcome}"${webhook.lastDelivery.detail ? ` — ${webhook.lastDelivery.detail}` : ''}. ${webhook.storedMessages} message(s) stored in total.`,
+    );
+  } else {
+    out.push(`${webhook.storedMessages} message(s) stored in total.`);
+  }
+
+  return out;
+}
+
 /**
  * Files Instagram DMs onto the sending scout's sheet.
  *
@@ -755,6 +854,127 @@ export class InstagramDmService {
       lastMessageAt: latest?.receivedAt ?? null,
       lastMessageStatus: latest?.status ?? null,
       lastMessageFrom: latest?.senderUsername ?? null,
+    };
+  }
+
+  /**
+   * Work out why no DMs are arriving, and say so in plain English.
+   *
+   * "Read 0 conversations" has several causes that look identical from the
+   * admin page: a token Meta rejects, the app asking Meta the wrong way, the
+   * account not subscribed to message webhooks, or Meta simply withholding the
+   * DMs from this app. Each gets asked about directly here, so the answer comes
+   * from Meta's own replies instead of another round of guessing.
+   *
+   * Only reports usernames, counts and Meta's error text — never the token.
+   */
+  async diagnose(): Promise<InstagramDiagnosis> {
+    const str = (v: unknown) => (typeof v === 'string' && v ? v : null);
+
+    // 1. Whose token is this, and is it a professional account?
+    const me = await this.graph.probe(
+      '/me',
+      { fields: 'id,user_id,username,account_type' },
+      DIAGNOSE_GRAPH_VERSION,
+    );
+    const account = me.ok
+      ? {
+          ok: true as const,
+          username: str(me.body.username),
+          accountType: str(me.body.account_type),
+          // Only trusted as a string: a 17-digit id through a JSON number is
+          // already rounded.
+          userId: str(me.body.user_id),
+        }
+      : { ok: false as const, error: me.error };
+
+    // 2. The inbox, asked three ways. The first is exactly how the poller asks.
+    const convoParams = { platform: 'instagram', fields: 'participants,updated_time' };
+    const variants: Array<{ label: string; path: string; version?: string }> = [
+      { label: 'the way the app reads it now', path: '/me/conversations' },
+      {
+        label: `pinned to API ${DIAGNOSE_GRAPH_VERSION}`,
+        path: '/me/conversations',
+        version: DIAGNOSE_GRAPH_VERSION,
+      },
+    ];
+    if (account.ok && account.userId) {
+      variants.push({
+        label: `by account id, API ${DIAGNOSE_GRAPH_VERSION}`,
+        path: `/${account.userId}/conversations`,
+        version: DIAGNOSE_GRAPH_VERSION,
+      });
+    }
+    const own = account.ok ? account.username : null;
+    const inbox: InboxProbe[] = [];
+    for (const v of variants) {
+      const res = await this.graph.probe(v.path, convoParams, v.version);
+      if (!res.ok) {
+        inbox.push({
+          label: v.label,
+          ok: false,
+          conversations: 0,
+          participants: [],
+          error: res.error,
+        });
+        continue;
+      }
+      const data = Array.isArray(res.body.data)
+        ? (res.body.data as Array<Record<string, unknown>>)
+        : [];
+      const participants = new Set<string>();
+      for (const convo of data) {
+        const people = (convo.participants as { data?: unknown } | undefined)?.data;
+        for (const p of Array.isArray(people) ? people : []) {
+          const name = str((p as Record<string, unknown>)?.username);
+          if (name && name !== own) participants.add(`@${name}`);
+        }
+      }
+      inbox.push({
+        label: v.label,
+        ok: true,
+        conversations: data.length,
+        participants: Array.from(participants).slice(0, 10),
+      });
+    }
+
+    // 3. Is the account subscribed to message webhooks, as Meta sees it?
+    const subs = await this.graph.probe('/me/subscribed_apps', {}, DIAGNOSE_GRAPH_VERSION);
+    let webhookSubscription: InstagramDiagnosis['webhookSubscription'];
+    if (subs.ok) {
+      const fields = new Set<string>();
+      for (const app of Array.isArray(subs.body.data) ? subs.body.data : []) {
+        const raw = (app as Record<string, unknown>)?.subscribed_fields;
+        for (const f of Array.isArray(raw) ? raw : []) {
+          const name = typeof f === 'string' ? f : str((f as Record<string, unknown>)?.name);
+          if (name) fields.add(name);
+        }
+      }
+      webhookSubscription = { ok: true, fields: Array.from(fields) };
+    } else {
+      webhookSubscription = { ok: false, error: subs.error };
+    }
+
+    // 4. Has Meta ever called us?
+    const [deliveries, lastDelivery, storedMessages] = await Promise.all([
+      this.prisma.instagramWebhookDelivery.count(),
+      this.prisma.instagramWebhookDelivery.findFirst({ orderBy: { at: 'desc' } }),
+      this.prisma.instagramMessage.count(),
+    ]);
+    const webhook = {
+      deliveries,
+      storedMessages,
+      lastDelivery: lastDelivery
+        ? { at: lastDelivery.at, outcome: lastDelivery.outcome, detail: lastDelivery.detail }
+        : null,
+    };
+
+    return {
+      account,
+      inbox,
+      webhookSubscription,
+      webhook,
+      verdict: diagnosisVerdict(account, inbox, webhookSubscription, webhook),
     };
   }
 

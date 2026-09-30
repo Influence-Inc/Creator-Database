@@ -2457,7 +2457,8 @@
       return (
         '<div class="ig-unmatched ig-unmatched-bad">' +
         '<span class="ig-unmatched-dot"></span>' +
-        '<span>Instagram said: <strong>' + esc(r.error || 'the read was refused') + '</strong>' + refiled + '</span>' +
+        '<span>Instagram said: <strong>' + esc(r.error || 'the read was refused') + '</strong>' + refiled +
+        igDiagnosisHtml(r.diagnosis) + '</span>' +
         '</div>'
       );
     }
@@ -2477,9 +2478,47 @@
       : '';
 
     return (
-      '<div class="ig-unmatched">' +
+      '<div class="ig-unmatched' + (r.diagnosis ? ' ig-unmatched-bad' : '') + '">' +
       '<span class="ig-unmatched-dot"></span>' +
-      '<span>' + summary + sample + '</span>' +
+      '<span>' + summary + sample + igDiagnosisHtml(r.diagnosis) + '</span>' +
+      '</div>'
+    );
+  }
+
+  /**
+   * Why an inbox read came back empty, from the server's diagnosis: the verdict
+   * first, then Meta's raw answers behind it, so a screenshot says everything.
+   */
+  function igDiagnosisHtml(d) {
+    if (!d) return '';
+    var li = function (text) { return '<li>' + text + '</li>'; };
+
+    var verdict = (d.verdict || []).map(function (line) { return li(esc(line)); }).join('');
+
+    var detail = [];
+    var acct = d.account;
+    if (acct) {
+      detail.push(li('Token: ' + (acct.ok
+        ? '@' + esc(acct.username || '?') + ' (' + esc(acct.accountType || 'type unknown') + ')'
+        : 'error — ' + esc(acct.error))));
+    }
+    (d.inbox || []).forEach(function (p) {
+      detail.push(li('Inbox, ' + esc(p.label) + ': ' + (p.ok
+        ? esc(p.conversations) + ' conversation' + (p.conversations === 1 ? '' : 's') +
+          (p.participants && p.participants.length ? ' (' + esc(p.participants.join(', ')) + ')' : '')
+        : 'error — ' + esc(p.error))));
+    });
+    var sub = d.webhookSubscription;
+    if (sub) {
+      detail.push(li('Webhook subscription: ' + (sub.ok
+        ? esc(sub.fields.length ? sub.fields.join(', ') : 'none')
+        : 'error — ' + esc(sub.error))));
+    }
+
+    return (
+      '<div class="ig-diagnosis"><strong>Why nothing is arriving</strong>' +
+      '<ul>' + verdict + '</ul>' +
+      '<div class="ig-diagnosis-detail">What Meta answered:<ul>' + detail.join('') + '</ul></div>' +
       '</div>'
     );
   }
