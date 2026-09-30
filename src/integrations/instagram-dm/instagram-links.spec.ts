@@ -3,12 +3,65 @@ import {
   classifyLink,
   classifyMessageLinks,
   messageNode,
+  permalinkFor,
   sharedItems,
+  shortcodeFromMediaId,
 } from './instagram-links';
 
 // What Meta actually puts on a share: a temporary media URL, never a permalink.
 const CDN =
   'https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=17912345678901234&signature=AbC';
+const cdnFor = (assetId: string) =>
+  `https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=${assetId}&signature=AbC`;
+
+// A published pair: this pk is the post at instagram.com/p/B8iwlG9pXHI.
+const PK = '2243569220713804232';
+const PK_CODE = 'B8iwlG9pXHI';
+
+describe('shortcodeFromMediaId', () => {
+  it('rebuilds the shortcode Instagram uses for a media pk', () => {
+    expect(shortcodeFromMediaId(PK)).toBe(PK_CODE);
+  });
+
+  it('reads the "<pk>_<owner id>" form too', () => {
+    expect(shortcodeFromMediaId(`${PK}_1234567`)).toBe(PK_CODE);
+  });
+
+  it('round-trips a current-day pk exactly', () => {
+    const pk = '3712345678901234567';
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    const code = shortcodeFromMediaId(pk) ?? '';
+    const back = [...code].reduce(
+      (n, ch) => n * BigInt(64) + BigInt(alphabet.indexOf(ch)),
+      BigInt(0),
+    );
+    expect(back.toString()).toBe(pk);
+  });
+
+  it('refuses ids that are not media pks rather than build a wrong link', () => {
+    expect(shortcodeFromMediaId('17912345678901234')).toBeNull(); // Graph media id
+    expect(shortcodeFromMediaId('1234567890123456')).toBeNull(); // Facebook video id
+    expect(shortcodeFromMediaId('abc')).toBeNull();
+    expect(shortcodeFromMediaId('')).toBeNull();
+    expect(shortcodeFromMediaId(null)).toBeNull();
+  });
+});
+
+describe('permalinkFor', () => {
+  it('uses /reel/ for reels and /p/ for everything else', () => {
+    expect(permalinkFor('ig_reel', PK, null)).toBe(`https://www.instagram.com/reel/${PK_CODE}`);
+    expect(permalinkFor('ig_post', PK, null)).toBe(`https://www.instagram.com/p/${PK_CODE}`);
+  });
+
+  it("only reads asset_id off Meta's own media host", () => {
+    expect(permalinkFor('ig_reel', null, `https://example.com/?asset_id=${PK}`)).toBeNull();
+  });
+
+  it('gives up cleanly when there is nothing to convert', () => {
+    expect(permalinkFor('ig_reel', null, CDN)).toBeNull();
+    expect(permalinkFor('ig_reel', null, null)).toBeNull();
+  });
+});
 
 describe('classifyLink', () => {
   it('reads a bare handle as a profile and canonicalises it', () => {
@@ -148,6 +201,8 @@ describe('attachmentUrls', () => {
 
 describe('sharedItems — webhook shares', () => {
   it('reads a shared reel as a reel even though its url is a CDN link', () => {
+    // A 17-digit id is a Graph id, not a pk, so no permalink can be rebuilt
+    // from it and the media link is kept.
     const [item] = sharedItems({
       attachments: [
         {
@@ -160,10 +215,43 @@ describe('sharedItems — webhook shares', () => {
       kind: 'reel',
       source: 'ig_reel',
       url: CDN,
+      mediaUrl: CDN,
       mediaId: '17912345678901234',
       title: 'cooking hack',
       handle: null,
     });
+  });
+
+  it('turns a shared reel into its permanent instagram.com link', () => {
+    const [item] = sharedItems({
+      attachments: [{ type: 'ig_reel', payload: { reel_video_id: PK, url: CDN } }],
+    });
+    expect(item.kind).toBe('reel');
+    expect(item.url).toBe(`https://www.instagram.com/reel/${PK_CODE}`);
+    // The media link Meta sent is still kept alongside.
+    expect(item.mediaUrl).toBe(CDN);
+  });
+
+  it('gives a shared post a /p/ link', () => {
+    const [item] = sharedItems({
+      attachments: [{ type: 'ig_post', payload: { id: PK, url: CDN } }],
+    });
+    expect(item.url).toBe(`https://www.instagram.com/p/${PK_CODE}`);
+  });
+
+  it("falls back to the media link's asset_id when the attachment names no id", () => {
+    const [item] = sharedItems({
+      attachments: [{ type: 'ig_reel', payload: { url: cdnFor(PK) } }],
+    });
+    expect(item.url).toBe(`https://www.instagram.com/reel/${PK_CODE}`);
+  });
+
+  it('keeps the media link rather than trust an id JSON already rounded', () => {
+    // pks exceed 2^53, so one sent as a JSON number has lost its low digits.
+    const payload = JSON.parse(`{"reel_video_id": ${PK}, "url": "${CDN}"}`);
+    const [item] = sharedItems({ attachments: [{ type: 'ig_reel', payload }] });
+    expect(item.url).toBe(CDN);
+    expect(item.mediaId).toBeNull();
   });
 
   it('reads a shared post as a reel — it is still the content to remake', () => {
@@ -260,6 +348,20 @@ describe('classifyMessageLinks with shares', () => {
     const out = classifyMessageLinks({ shares });
     expect(out.reelLinks).toEqual([]);
     expect(out.otherLinks).toEqual(['https://x.test/a.mp4']);
+  });
+});
+
+describe('sharedItems — permanent links from the inbox poll', () => {
+  it('rebuilds the link for video media from its asset_id', () => {
+    const [item] = sharedItems({ attachments: { data: [{ video_data: { url: cdnFor(PK) } }] } });
+    expect(item.url).toBe(`https://www.instagram.com/p/${PK_CODE}`);
+  });
+
+  it("never treats the attachment's own id as the media's", () => {
+    const [item] = sharedItems({
+      attachments: { data: [{ id: PK, video_data: { url: CDN } }] },
+    });
+    expect(item.url).toBe(CDN);
   });
 });
 

@@ -2444,9 +2444,14 @@
 
     // Earlier shares recovered from stored payloads — independent of whether
     // the live inbox read below succeeded.
-    var refiled = r.refiled
-      ? ' Re-filed ' + esc(r.refiled) + ' earlier share' + (r.refiled === 1 ? '' : 's') + ' onto scout sheets.'
-      : '';
+    var refiled =
+      (r.refiled
+        ? ' Re-filed ' + esc(r.refiled) + ' earlier share' + (r.refiled === 1 ? '' : 's') + ' onto scout sheets.'
+        : '') +
+      (r.upgradedLinks
+        ? ' Made ' + esc(r.upgradedLinks) + ' expiring reel link' + (r.upgradedLinks === 1 ? '' : 's') +
+          ' permanent.'
+        : '');
 
     if (r.ok === false) {
       return (

@@ -147,6 +147,20 @@ describe('InstagramDmService — Share-button shares', () => {
     expect(d.messages[0]).toMatchObject({ reelLinks: [CDN], otherLinks: [] });
   });
 
+  it('puts the permanent instagram.com link on the sheet when the media id allows it', async () => {
+    const d = makeDeps();
+    const svc = new InstagramDmService(d.prisma, d.config, d.graph);
+    const event = shareEvent();
+    event.message.attachments[0].payload.reel_video_id = '2243569220713804232';
+    const [message] = svc.extractMessages({ entry: [{ messaging: [event] }] });
+
+    await svc.ingest(message);
+
+    expect(d.created[0]).toMatchObject({
+      reelIdeas: 'https://www.instagram.com/reel/B8iwlG9pXHI',
+    });
+  });
+
   it('says a share came through unsupported, rather than calling it chatter', async () => {
     const d = makeDeps();
     await new InstagramDmService(d.prisma, d.config, d.graph).ingest({
@@ -214,6 +228,74 @@ describe('InstagramDmService.refileDroppedShares', () => {
       expect.objectContaining({
         where: { status: InstagramMessageStatus.NO_LINKS },
         orderBy: { receivedAt: 'asc' },
+      }),
+    );
+  });
+});
+
+describe('InstagramDmService.upgradeReelLinks', () => {
+  const PK = '2243569220713804232';
+  const PERMALINK = 'https://www.instagram.com/reel/B8iwlG9pXHI';
+  const cdn = `https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=${PK}&signature=s`;
+  const filed = (reelLinks: string[], payload: Record<string, unknown> = { url: cdn }) => ({
+    id: 'msg-1',
+    entryId: 'row-1',
+    reelLinks,
+    raw: { sender: { id: 'IGSID_1' }, message: { attachments: [{ type: 'ig_reel', payload }] } },
+  });
+
+  function withFiled(rows: unknown[], cell: string | null) {
+    const d = makeDeps();
+    const im = d.prisma.instagramMessage as unknown as Record<string, jest.Mock>;
+    const se = d.prisma.scoutEntry as unknown as Record<string, jest.Mock>;
+    im.findMany = jest.fn().mockResolvedValue(rows);
+    im.update = jest.fn().mockResolvedValue({});
+    se.findUnique = jest.fn().mockResolvedValue({ reelIdeas: cell });
+    return { im, se, svc: new InstagramDmService(d.prisma, d.config, d.graph) };
+  }
+
+  it('replaces an expiring media link on the sheet with the permanent one', async () => {
+    const { im, se, svc } = withFiled([filed([cdn])], cdn);
+
+    expect(await svc.upgradeReelLinks()).toEqual({ checked: 1, upgraded: 1 });
+    expect(se.update).toHaveBeenCalledWith({
+      where: { id: 'row-1' },
+      data: { reelIdeas: PERMALINK },
+    });
+    // The message log follows, so the row isn't revisited on the next run.
+    expect(im.update).toHaveBeenCalledWith({
+      where: { id: 'msg-1' },
+      data: { reelLinks: [PERMALINK] },
+    });
+  });
+
+  it('leaves a sheet cell a scout has since edited alone', async () => {
+    const { se, svc } = withFiled([filed([cdn])], 'https://www.instagram.com/reel/theirOwnPick');
+    expect((await svc.upgradeReelLinks()).upgraded).toBe(0);
+    expect(se.update).not.toHaveBeenCalled();
+  });
+
+  it('keeps the media link when the id cannot be converted', async () => {
+    const graphOnly =
+      'https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=17912345678901234&signature=s';
+    const { im, se, svc } = withFiled([filed([graphOnly], { url: graphOnly })], graphOnly);
+    expect(await svc.upgradeReelLinks()).toEqual({ checked: 1, upgraded: 0 });
+    expect(se.update).not.toHaveBeenCalled();
+    expect(im.update).not.toHaveBeenCalled();
+  });
+
+  it('skips rows that already hold instagram.com links without reading the sheet', async () => {
+    const { se, svc } = withFiled([filed([PERMALINK])], PERMALINK);
+    expect(await svc.upgradeReelLinks()).toEqual({ checked: 0, upgraded: 0 });
+    expect(se.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('only looks at filed messages', async () => {
+    const { im, svc } = withFiled([], null);
+    await svc.upgradeReelLinks();
+    expect(im.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { status: InstagramMessageStatus.APPLIED, entryId: { not: null } },
       }),
     );
   });

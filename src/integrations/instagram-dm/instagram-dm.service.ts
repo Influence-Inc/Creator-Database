@@ -5,6 +5,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { normalizeInstagram } from '../../common/utils/normalize';
 import {
   attachmentUrls,
+  classifyLink,
   classifyMessageLinks,
   messageNode,
   SharedItem,
@@ -485,6 +486,82 @@ export class InstagramDmService {
       this.logger.log(`Re-filed ${refiled} earlier Instagram share(s) onto scout sheets`);
     }
     return { checked: rows.length, refiled };
+  }
+
+  /**
+   * Replace expiring media links on already-filed rows with permanent
+   * instagram.com links.
+   *
+   * Shares filed before the media id was converted (see `permalinkFor`) put
+   * Meta's `lookaside.fbsbx.com` link on the sheet, which stops working after a
+   * few days. The stored payload still carries the id, so the permanent link
+   * can be rebuilt now.
+   *
+   * A sheet cell is only rewritten while it still holds that exact media link:
+   * if a scout has since typed something else there, their edit stands. Shares
+   * whose id can't be converted keep their media link. Safe to run repeatedly.
+   */
+  async upgradeReelLinks(limit = 1000): Promise<{ checked: number; upgraded: number }> {
+    const rows = await this.prisma.instagramMessage.findMany({
+      where: { status: InstagramMessageStatus.APPLIED, entryId: { not: null } },
+      orderBy: { receivedAt: 'desc' },
+      take: limit,
+      select: { id: true, raw: true, reelLinks: true, entryId: true },
+    });
+
+    let checked = 0;
+    let upgraded = 0;
+    for (const row of rows) {
+      // Anything that isn't an instagram.com link is an expiring media URL.
+      const expiring = row.reelLinks.filter((url) => classifyLink(url).kind === 'other');
+      if (expiring.length === 0 || !row.entryId) continue;
+      checked += 1;
+
+      const swaps = new Map<string, string>();
+      for (const share of sharedItems(messageNode(row.raw))) {
+        if (
+          share.kind === 'reel' &&
+          share.mediaUrl &&
+          share.url &&
+          share.url !== share.mediaUrl &&
+          expiring.includes(share.mediaUrl)
+        ) {
+          swaps.set(share.mediaUrl, share.url);
+        }
+      }
+      if (swaps.size === 0) continue;
+
+      try {
+        const entry = await this.prisma.scoutEntry.findUnique({
+          where: { id: row.entryId },
+          select: { reelIdeas: true },
+        });
+        const next = entry?.reelIdeas ? swaps.get(entry.reelIdeas) : undefined;
+        if (next) {
+          await this.prisma.scoutEntry.update({
+            where: { id: row.entryId },
+            data: { reelIdeas: next },
+          });
+          upgraded += 1;
+        }
+        // Keep the message log in step, so this row isn't checked again.
+        await this.prisma.instagramMessage.update({
+          where: { id: row.id },
+          data: { reelLinks: row.reelLinks.map((url) => swaps.get(url) ?? url) },
+        });
+      } catch (err) {
+        this.logger.error(
+          `Could not upgrade the reel link for Instagram message ${row.id}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    if (upgraded > 0) {
+      this.logger.log(
+        `Replaced ${upgraded} expiring reel link(s) with permanent instagram.com links`,
+      );
+    }
+    return { checked, upgraded };
   }
 
   /** Admin path: resolve one unplaced message to a scout. */

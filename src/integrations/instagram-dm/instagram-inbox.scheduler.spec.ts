@@ -7,6 +7,7 @@ function make(
   settings: Record<string, unknown>,
   sync = jest.fn(),
   refile = jest.fn().mockResolvedValue({ checked: 0, refiled: 0 }),
+  upgrade = jest.fn().mockResolvedValue({ checked: 0, upgraded: 0 }),
 ) {
   const config = {
     get: jest.fn((key: string) => settings[key]),
@@ -15,8 +16,12 @@ function make(
     addInterval: jest.fn(),
     addTimeout: jest.fn(),
   } as unknown as SchedulerRegistry;
-  const dm = { syncInbox: sync, refileDroppedShares: refile } as unknown as InstagramDmService;
-  return { s: new InstagramInboxScheduler(config, registry, dm), registry, dm, refile };
+  const dm = {
+    syncInbox: sync,
+    refileDroppedShares: refile,
+    upgradeReelLinks: upgrade,
+  } as unknown as InstagramDmService;
+  return { s: new InstagramInboxScheduler(config, registry, dm), registry, dm, refile, upgrade };
 }
 
 /** Clear any timers a real (non-fake) onModuleInit started. */
@@ -40,9 +45,9 @@ describe('InstagramInboxScheduler', () => {
     clearTimers(registry);
   });
 
-  it('re-files earlier dropped shares once, a minute after boot', async () => {
+  it('re-files dropped shares, then makes reel links permanent, a minute after boot', async () => {
     jest.useFakeTimers();
-    const { s, registry, refile } = make(ON);
+    const { s, registry, refile, upgrade } = make(ON);
     s.onModuleInit();
     expect(registry.addTimeout).toHaveBeenCalledWith('instagram-refile-shares', expect.anything());
 
@@ -50,9 +55,23 @@ describe('InstagramInboxScheduler', () => {
     expect(refile).not.toHaveBeenCalled();
     jest.advanceTimersByTime(1);
     expect(refile).toHaveBeenCalledTimes(1);
+    // Upgrade runs after the re-file settles; let its promise chain finish.
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    expect(upgrade).toHaveBeenCalledTimes(1);
 
     clearTimers(registry);
     jest.useRealTimers();
+  });
+
+  it('still upgrades reel links when the re-file step fails', async () => {
+    const refile = jest.fn().mockRejectedValue(new Error('db down'));
+    const upgrade = jest.fn().mockResolvedValue({ checked: 0, upgraded: 0 });
+    const { s } = make(ON, jest.fn(), refile, upgrade);
+    const run = (
+      s as unknown as { refileDroppedShares: () => Promise<void> }
+    ).refileDroppedShares.bind(s);
+    await run();
+    expect(upgrade).toHaveBeenCalledTimes(1);
   });
 
   it('still re-files without a token, since that reads stored payloads not Graph', () => {

@@ -141,9 +141,13 @@ export interface SharedItem {
   kind: 'reel' | 'profile' | 'unknown';
   /** Attachment type as Meta labelled it, or where it came from in the API. */
   source: string;
-  /** Link to store: a canonical instagram.com URL when Meta sent one,
-   *  otherwise the media URL Meta did send. */
+  /** Link to store: a canonical instagram.com URL — sent by Meta, or rebuilt
+   *  from the media id (see `permalinkFor`) — falling back to the media URL
+   *  Meta sent when neither is possible. */
   url: string | null;
+  /** The URL exactly as Meta sent it — for a share, a `lookaside.fbsbx.com`
+   *  media link that expires after a few days. */
+  mediaUrl: string | null;
   /** Meta's id for the shared media (`reel_video_id` / post `id`). Kept
    *  because the media URL expires and this does not. */
   mediaId: string | null;
@@ -181,7 +185,10 @@ function httpUrl(value: unknown): string | null {
 }
 
 function idString(value: unknown): string | null {
-  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  // A number past 2^53 was already rounded by JSON.parse; its digits are no
+  // longer the id, and a media pk is always that large. Refuse it rather than
+  // rebuild a link from the wrong number.
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? String(value) : null;
   return str(value);
 }
 
@@ -205,7 +212,7 @@ function toSharedItem(
   fields: { url: string | null; mediaId: string | null; title: string | null; username?: unknown },
   assumeContent: boolean,
 ): SharedItem {
-  const base = { source: type, mediaId: fields.mediaId, title: fields.title };
+  const base = { source: type, mediaUrl: fields.url, mediaId: fields.mediaId, title: fields.title };
 
   // An actual instagram.com link settles it, whatever the type says.
   if (fields.url) {
@@ -227,10 +234,74 @@ function toSharedItem(
   }
 
   if ((REEL_TYPES.has(type) || assumeContent) && fields.url) {
-    return { ...base, kind: 'reel', url: fields.url, handle: null };
+    // Meta only sends an expiring media link; swap in the permanent one when
+    // the media id allows it.
+    const permalink = permalinkFor(type, fields.mediaId, fields.url);
+    return { ...base, kind: 'reel', url: permalink ?? fields.url, handle: null };
   }
 
   return { ...base, kind: 'unknown', url: fields.url, handle: null };
+}
+
+/** The alphabet Instagram writes shortcodes in: base 64, most significant first. */
+const SHORTCODE_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+
+/** 10^18: every Instagram media pk since ~2015 is at least 19 digits. */
+const MIN_MEDIA_PK = BigInt('1000000000000000000');
+
+/**
+ * The shortcode in `instagram.com/reel/<shortcode>` for an Instagram media pk.
+ *
+ * A shortcode is just the media's internal number (its "pk") written in base
+ * 64, so it can be rebuilt exactly — but ONLY from a pk. Meta has other ids for
+ * the same media: Graph API media ids are 17 digits and Facebook video ids are
+ * 15–16, and encoding either yields a well-formed shortcode for some other post
+ * or none at all. Those are told apart by size: anything under 19 digits is
+ * refused rather than turned into a link that looks right but isn't.
+ *
+ * Takes a string, never a number: pks exceed 2^53, so a pk that went through
+ * a JSON number has already lost its low digits.
+ */
+export function shortcodeFromMediaId(id: string | null | undefined): string | null {
+  if (typeof id !== 'string') return null;
+  // Some surfaces write "<pk>_<owner id>"; the shortcode is the pk alone.
+  const pk = id.trim().split('_')[0];
+  if (!/^\d{19,20}$/.test(pk)) return null;
+
+  let n = BigInt(pk);
+  if (n < MIN_MEDIA_PK) return null;
+  let code = '';
+  while (n > BigInt(0)) {
+    code = SHORTCODE_ALPHABET[Number(n % BigInt(64))] + code;
+    n /= BigInt(64);
+  }
+  return code;
+}
+
+/** The `asset_id` on a `lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=…` link. */
+function assetIdFrom(url: string | null): string | null {
+  const parsed = url ? parseUrl(url) : null;
+  if (!parsed || !/(^|\.)fbsbx\.com$/i.test(parsed.hostname)) return null;
+  return parsed.searchParams.get('asset_id');
+}
+
+/**
+ * The permanent instagram.com link for a share, or null when it can't be
+ * rebuilt with certainty (see `shortcodeFromMediaId`).
+ *
+ * Tries the id Meta named on the attachment (`reel_video_id` / post `id`),
+ * then the `asset_id` on the media link. Reels get `/reel/`, everything else
+ * `/p/` — Instagram serves any media on either path.
+ */
+export function permalinkFor(
+  type: string,
+  mediaId: string | null,
+  mediaUrl: string | null,
+): string | null {
+  const code = shortcodeFromMediaId(mediaId) ?? shortcodeFromMediaId(assetIdFrom(mediaUrl));
+  if (!code) return null;
+  const path = type === 'ig_reel' || type === 'reel' || type === 'ig_clip' ? 'reel' : 'p';
+  return `https://www.instagram.com/${path}/${code}`;
 }
 
 /** The list form of a field that webhooks send bare and the API wraps in `{ data }`. */
@@ -283,20 +354,23 @@ export function sharedItems(message: Record<string, unknown> | null | undefined)
     out.push(
       toSharedItem(
         type || (video ? 'video' : image ? 'image' : 'file'),
-        { url, mediaId: idString(att.id), title: str(att.name) },
+        // `att.id` is the attachment's own id, not the shared media's, so it
+        // is never used to rebuild a link; the media URL's asset_id is.
+        { url, mediaId: null, title: str(att.name) },
         !!(video || image),
       ),
     );
   }
 
-  // The Conversations API reports shared posts under `shares`.
+  // The Conversations API reports shared posts under `shares`. Their `id` is
+  // likewise not documented as the media's, so only the link is relied on.
   for (const share of listOf(message.shares)) {
     out.push(
       toSharedItem(
         'shares',
         {
           url: httpUrl(share.link) ?? httpUrl(share.url),
-          mediaId: idString(share.id),
+          mediaId: null,
           title: str(share.name) ?? str(share.description),
         },
         true,
