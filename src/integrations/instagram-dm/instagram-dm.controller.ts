@@ -142,8 +142,9 @@ export class InstagramDmController {
    *
    * The manual counterpart to the webhook, for when Meta isn't delivering — and
    * the only way to pick up messages sent before the integration was wired up.
-   * It first re-files any earlier shares that were dropped as "no links", so
-   * one click also recovers those.
+   * It first re-files any earlier shares that were dropped as "no links", and
+   * swaps expiring media links on filed rows for permanent ones, so one click
+   * also recovers those.
    */
   @Public()
   @UseGuards(SessionGuard)
@@ -151,8 +152,21 @@ export class InstagramDmController {
   @Post('sync')
   async sync() {
     const { refiled } = await this.dm.refileDroppedShares();
+    const { upgraded } = await this.dm.upgradeReelLinks();
     const res = await this.dm.syncInbox();
-    return { ...res, refiled };
+    // An empty or failed read is exactly when the admin needs to know why, so
+    // the diagnosis rides along instead of being a separate thing to find.
+    const diagnosis = !res.ok || res.conversations === 0 ? await this.dm.diagnose() : undefined;
+    return { ...res, refiled, upgradedLinks: upgraded, ...(diagnosis ? { diagnosis } : {}) };
+  }
+
+  /** Why DMs aren't arriving, asked of Meta directly. Admin-only; no secrets. */
+  @Public()
+  @UseGuards(SessionGuard)
+  @Roles(UserRole.ADMIN)
+  @Get('diagnose')
+  diagnose() {
+    return this.dm.diagnose();
   }
 
   /** How many links arrived from accounts not linked to any scout. */

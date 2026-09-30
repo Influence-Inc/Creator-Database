@@ -35,7 +35,8 @@ export class InstagramInboxScheduler implements OnModuleInit {
     if (!this.config.get<boolean>('jobs.enableScheduler')) return;
 
     // Once per boot, recover shares that were recorded as "no links" before
-    // shares were read by attachment type. Delayed so the background database
+    // shares were read by attachment type, and swap expiring media links on
+    // filed rows for permanent instagram.com ones. Delayed so the background database
     // migration (started after the port binds — see main.ts) has finished, and
     // independent of the token: re-filing reads stored payloads, not Graph.
     const refile = setTimeout(() => {
@@ -62,13 +63,24 @@ export class InstagramInboxScheduler implements OnModuleInit {
     this.logger.log(`Polling the Instagram inbox every ${seconds}s`);
   }
 
-  /** The one-off post-boot re-file; a failure is logged, never thrown. */
+  /**
+   * The one-off post-boot catch-up: re-file dropped shares, then replace
+   * expiring media links with permanent ones. Each step's failure is logged,
+   * never thrown, and one failing doesn't skip the other.
+   */
   private async refileDroppedShares(): Promise<void> {
     try {
       await this.dm.refileDroppedShares();
     } catch (err) {
       this.logger.error(
         `Re-filing earlier Instagram shares failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    try {
+      await this.dm.upgradeReelLinks();
+    } catch (err) {
+      this.logger.error(
+        `Upgrading expiring reel links failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }

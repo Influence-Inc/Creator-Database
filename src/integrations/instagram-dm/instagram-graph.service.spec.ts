@@ -77,3 +77,42 @@ describe('InstagramGraphService.fetchConversations', () => {
     expect(res).toEqual({ ok: false, error: 'Invalid OAuth access token' });
   });
 });
+
+describe('InstagramGraphService.probe', () => {
+  const realFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = realFetch;
+  });
+
+  function withBase(base: string | undefined) {
+    const config = {
+      get: jest.fn((k: string) =>
+        k === 'instagramDm.accessToken' ? 'tok' : k === 'instagramDm.graphBase' ? base : undefined,
+      ),
+    } as unknown as ConfigService;
+    const urls: string[] = [];
+    global.fetch = jest.fn((url: string) => {
+      urls.push(url);
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
+    }) as unknown as typeof fetch;
+    return { graph: new InstagramGraphService(config), urls };
+  }
+
+  it('pins the requested API version', async () => {
+    const { graph, urls } = withBase(undefined);
+    await graph.probe('/me', {}, 'v23.0');
+    expect(new URL(urls[0]).pathname).toBe('/v23.0/me');
+  });
+
+  it('replaces a version already on the configured base rather than doubling it', async () => {
+    const { graph, urls } = withBase('https://graph.instagram.com/v19.0/');
+    await graph.probe('/me', {}, 'v23.0');
+    expect(new URL(urls[0]).pathname).toBe('/v23.0/me');
+  });
+
+  it('asks exactly as configured when no version is given', async () => {
+    const { graph, urls } = withBase('https://graph.instagram.com');
+    await graph.probe('/me/conversations', { platform: 'instagram' });
+    expect(new URL(urls[0]).pathname).toBe('/me/conversations');
+  });
+});
