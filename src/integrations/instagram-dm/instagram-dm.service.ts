@@ -3,7 +3,13 @@ import { ConfigService } from '@nestjs/config';
 import { InstagramMessageStatus, Prisma, ScoutEntry, User } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { normalizeInstagram } from '../../common/utils/normalize';
-import { attachmentUrls, classifyMessageLinks } from './instagram-links';
+import {
+  attachmentUrls,
+  classifyMessageLinks,
+  messageNode,
+  SharedItem,
+  sharedItems,
+} from './instagram-links';
 import { InstagramGraphService } from './instagram-graph.service';
 
 /** One message lifted out of a webhook payload. */
@@ -12,6 +18,9 @@ export interface InboundMessage {
   senderId: string;
   text?: string | null;
   attachmentUrls: string[];
+  /** What was shared with the Share button, read by attachment type. When
+   *  present this — not `attachmentUrls` — decides what gets filed. */
+  shares?: SharedItem[];
   raw: unknown;
 }
 
@@ -228,7 +237,13 @@ export class InstagramDmService {
       return { status: seen.status, note: 'duplicate delivery', entryId: seen.entryId };
     }
 
-    const links = classifyMessageLinks({ text: msg.text, attachmentUrls: msg.attachmentUrls });
+    // Shares are read by attachment type; their raw URLs are never re-read by
+    // host as well, or each share would also land in `otherLinks`.
+    const links = classifyMessageLinks(
+      msg.shares
+        ? { text: msg.text, shares: msg.shares }
+        : { text: msg.text, attachmentUrls: msg.attachmentUrls },
+    );
     const record = {
       messageId: msg.messageId,
       senderId: msg.senderId,
@@ -261,15 +276,24 @@ export class InstagramDmService {
     }
 
     if (!hasLinks) {
+      // Meta flags content it won't pass through (it has no documented profile
+      // share, for one) as unsupported. Say so, rather than implying the scout
+      // sent nothing useful.
+      const unsupported = messageNode(msg.raw).is_unsupported === true;
+      const unknownShare = (msg.shares ?? []).find((s) => s.kind === 'unknown');
       await this.prisma.instagramMessage.create({
         data: {
           ...record,
           senderUsername: username ?? scout.instagramHandle,
           scoutId: scout.id,
           status: InstagramMessageStatus.NO_LINKS,
-          statusNote: links.otherLinks.length
-            ? 'Shared something that is not an Instagram profile or reel link'
-            : 'No Instagram links in the message',
+          statusNote: unsupported
+            ? 'Instagram delivered this share as unsupported content, with no link or details to file'
+            : unknownShare
+              ? `Shared a "${unknownShare.source}" attachment, which is not a reel, post or profile`
+              : links.otherLinks.length
+                ? 'Shared something that is not an Instagram profile or reel link'
+                : 'No Instagram links in the message',
         },
       });
       return { status: InstagramMessageStatus.NO_LINKS };
@@ -344,6 +368,7 @@ export class InstagramDmService {
           senderId,
           text: typeof message.text === 'string' ? message.text : null,
           attachmentUrls: attachmentUrls(message),
+          shares: sharedItems(message),
           raw: event,
         });
       }
@@ -388,15 +413,15 @@ export class InstagramDmService {
 
     let filed = 0;
     for (const row of pending) {
-      const event = (row.raw ?? {}) as Record<string, unknown>;
-      const inner = (event.message ?? {}) as Record<string, unknown>;
+      const node = messageNode(row.raw);
       // Clear the old ledger row so ingest doesn't treat this as a duplicate.
       await this.prisma.instagramMessage.delete({ where: { id: row.id } });
       const outcome = await this.ingest({
         messageId: row.messageId,
         senderId: row.senderId,
         text: row.text,
-        attachmentUrls: attachmentUrls(inner),
+        attachmentUrls: attachmentUrls(node),
+        shares: sharedItems(node),
         raw: row.raw,
       });
       if (outcome.status === InstagramMessageStatus.APPLIED) filed += 1;
@@ -406,6 +431,60 @@ export class InstagramDmService {
       `Linked Instagram sender ${senderId} to scout ${scout.username}; re-filed ${filed} message(s)`,
     );
     return { linked: true as const, scoutId, reprocessed: pending.length, filed };
+  }
+
+  /**
+   * Re-file shares that were dropped as "no links" before shares were read by
+   * attachment type.
+   *
+   * Until then a reel or post sent with the Share button was judged by its URL,
+   * and since Meta only ever sends a `lookaside.fbsbx.com` media URL for a
+   * share, every one was recorded as NO_LINKS. The verbatim payload was kept on
+   * each of those rows, so they can be read again now and put on the scout's
+   * sheet without anyone resending them.
+   *
+   * Only rows that now yield a reel or profile are touched; a message that
+   * genuinely had nothing in it stays as it was. Safe to run repeatedly — a
+   * refiled message is APPLIED and never picked up here again.
+   */
+  async refileDroppedShares(limit = 500): Promise<{ checked: number; refiled: number }> {
+    const rows = await this.prisma.instagramMessage.findMany({
+      where: { status: InstagramMessageStatus.NO_LINKS },
+      // Oldest first, so a profile and reel sent in that order still pair.
+      orderBy: { receivedAt: 'asc' },
+      take: limit,
+    });
+
+    let refiled = 0;
+    for (const row of rows) {
+      const node = messageNode(row.raw);
+      const shares = sharedItems(node);
+      const links = classifyMessageLinks({ text: row.text, shares });
+      if (links.profileLinks.length === 0 && links.reelLinks.length === 0) continue;
+
+      try {
+        // Clear the old ledger row so ingest doesn't treat this as a duplicate.
+        await this.prisma.instagramMessage.delete({ where: { id: row.id } });
+        const outcome = await this.ingest({
+          messageId: row.messageId,
+          senderId: row.senderId,
+          text: row.text,
+          attachmentUrls: attachmentUrls(node),
+          shares,
+          raw: row.raw,
+        });
+        if (outcome.status === InstagramMessageStatus.APPLIED) refiled += 1;
+      } catch (err) {
+        this.logger.error(
+          `Could not re-file Instagram message ${row.messageId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    if (refiled > 0) {
+      this.logger.log(`Re-filed ${refiled} earlier Instagram share(s) onto scout sheets`);
+    }
+    return { checked: rows.length, refiled };
   }
 
   /** Admin path: resolve one unplaced message to a scout. */
@@ -684,6 +763,7 @@ export class InstagramDmService {
           senderId,
           text: typeof item.message === 'string' ? item.message : null,
           attachmentUrls: attachmentUrls(item),
+          shares: sharedItems(item),
           raw: item,
         });
 

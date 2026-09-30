@@ -111,6 +111,112 @@ describe('InstagramDmService.extractMessages', () => {
     expect(svc().extractMessages({})).toEqual([]);
     expect(svc().extractMessages(null)).toEqual([]);
   });
+
+  it('reads a reel sent with the Share button, whose url is only a CDN link', () => {
+    const out = svc().extractMessages(shareWebhook());
+    expect(out[0].shares).toEqual([
+      expect.objectContaining({ kind: 'reel', source: 'ig_reel', url: CDN, mediaId: '179123' }),
+    ]);
+  });
+});
+
+// A shared reel exactly as Meta delivers it: no text, and a lookaside media URL
+// rather than an instagram.com permalink.
+const CDN = 'https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=179123&signature=AbC';
+const shareEvent = () => ({
+  sender: { id: 'IGSID_1' },
+  message: {
+    mid: 'mid-share',
+    attachments: [
+      { type: 'ig_reel', payload: { reel_video_id: '179123', title: 'hack', url: CDN } },
+    ],
+  },
+});
+const shareWebhook = () => ({ object: 'instagram', entry: [{ messaging: [shareEvent()] }] });
+
+describe('InstagramDmService — Share-button shares', () => {
+  it('files a shared reel onto the scout sheet instead of dropping it as "no links"', async () => {
+    const d = makeDeps();
+    const svc = new InstagramDmService(d.prisma, d.config, d.graph);
+    const [message] = svc.extractMessages(shareWebhook());
+
+    const out = await svc.ingest(message);
+
+    expect(out.status).toBe(InstagramMessageStatus.APPLIED);
+    expect(d.created[0]).toMatchObject({ instagramProfileLink: '', reelIdeas: CDN });
+    expect(d.messages[0]).toMatchObject({ reelLinks: [CDN], otherLinks: [] });
+  });
+
+  it('says a share came through unsupported, rather than calling it chatter', async () => {
+    const d = makeDeps();
+    await new InstagramDmService(d.prisma, d.config, d.graph).ingest({
+      ...msg(),
+      shares: [],
+      raw: { sender: { id: 'IGSID_1' }, message: { mid: 'mid-1', is_unsupported: true } },
+    });
+    expect(d.messages[0]).toMatchObject({ status: InstagramMessageStatus.NO_LINKS });
+    expect((d.messages[0] as { statusNote: string }).statusNote).toMatch(/unsupported/);
+  });
+});
+
+describe('InstagramDmService.refileDroppedShares', () => {
+  function withStored(rows: unknown[]) {
+    const d = makeDeps();
+    const im = d.prisma.instagramMessage as unknown as Record<string, jest.Mock>;
+    im.findMany = jest.fn().mockResolvedValue(rows);
+    im.delete = jest.fn().mockResolvedValue({});
+    return { d, im, svc: new InstagramDmService(d.prisma, d.config, d.graph) };
+  }
+
+  const stored = (id: string, raw: unknown, text: string | null = null) => ({
+    id,
+    messageId: `mid-${id}`,
+    senderId: 'IGSID_1',
+    text,
+    raw,
+    status: InstagramMessageStatus.NO_LINKS,
+  });
+
+  it('re-files a share that was recorded as "no links" from its stored payload', async () => {
+    const { d, im, svc } = withStored([stored('r1', shareEvent())]);
+
+    const out = await svc.refileDroppedShares();
+
+    expect(out).toEqual({ checked: 1, refiled: 1 });
+    expect(im.delete).toHaveBeenCalledWith({ where: { id: 'r1' } });
+    expect(d.created[0]).toMatchObject({ reelIdeas: CDN });
+  });
+
+  it('also re-files shares that were read from the inbox, not a webhook', async () => {
+    const polled = {
+      id: 'mid-p',
+      from: { id: 'IGSID_1' },
+      attachments: { data: [{ video_data: { url: CDN } }] },
+    };
+    const { d, svc } = withStored([stored('p1', polled)]);
+    expect((await svc.refileDroppedShares()).refiled).toBe(1);
+    expect(d.created[0]).toMatchObject({ reelIdeas: CDN });
+  });
+
+  it('leaves a message that genuinely had nothing in it alone', async () => {
+    const { d, im, svc } = withStored([
+      stored('c1', { sender: { id: 'IGSID_1' }, message: { mid: 'x', text: 'hi' } }, 'hi'),
+    ]);
+    expect(await svc.refileDroppedShares()).toEqual({ checked: 1, refiled: 0 });
+    expect(im.delete).not.toHaveBeenCalled();
+    expect(d.created).toHaveLength(0);
+  });
+
+  it('only looks at messages that were dropped as "no links", oldest first', async () => {
+    const { im, svc } = withStored([]);
+    await svc.refileDroppedShares();
+    expect(im.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { status: InstagramMessageStatus.NO_LINKS },
+        orderBy: { receivedAt: 'asc' },
+      }),
+    );
+  });
 });
 
 describe('InstagramDmService.ingest', () => {
@@ -591,6 +697,24 @@ describe('InstagramDmService.syncInbox', () => {
     expect(out.filed).toBe(1);
     // The company's own reply must never become a scouting row.
     expect((prisma.scoutEntry.create as jest.Mock).mock.calls).toHaveLength(1);
+  });
+
+  it('files a reel that the inbox returns as video media, with no text', async () => {
+    const cdn = 'https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=9&signature=s';
+    const { svc, prisma } = syncDeps(
+      convo([
+        {
+          id: 'm1',
+          from: { id: 'IGSID_1' },
+          attachments: { data: [{ video_data: { url: cdn } }] },
+        },
+      ]),
+    );
+    const out = await svc.syncInbox();
+    expect(out.filed).toBe(1);
+    expect((prisma.scoutEntry.create as jest.Mock).mock.calls[0][0].data).toMatchObject({
+      reelIdeas: cdn,
+    });
   });
 
   it('counts a message it has already filed rather than filing it twice', async () => {

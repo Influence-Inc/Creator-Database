@@ -142,13 +142,17 @@ export class InstagramDmController {
    *
    * The manual counterpart to the webhook, for when Meta isn't delivering — and
    * the only way to pick up messages sent before the integration was wired up.
+   * It first re-files any earlier shares that were dropped as "no links", so
+   * one click also recovers those.
    */
   @Public()
   @UseGuards(SessionGuard)
   @Roles(UserRole.ADMIN)
   @Post('sync')
-  sync() {
-    return this.dm.syncInbox();
+  async sync() {
+    const { refiled } = await this.dm.refileDroppedShares();
+    const res = await this.dm.syncInbox();
+    return { ...res, refiled };
   }
 
   /** How many links arrived from accounts not linked to any scout. */

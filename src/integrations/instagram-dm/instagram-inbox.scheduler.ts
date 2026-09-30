@@ -3,6 +3,9 @@ import { ConfigService } from '@nestjs/config';
 import { SchedulerRegistry } from '@nestjs/schedule';
 import { InstagramDmService } from './instagram-dm.service';
 
+/** How long after boot the one-off re-file of dropped shares runs. */
+const REFILE_DELAY_MS = 60_000;
+
 /**
  * Polls the company Instagram inbox on a fixed interval (35s by default).
  *
@@ -31,6 +34,16 @@ export class InstagramInboxScheduler implements OnModuleInit {
   onModuleInit(): void {
     if (!this.config.get<boolean>('jobs.enableScheduler')) return;
 
+    // Once per boot, recover shares that were recorded as "no links" before
+    // shares were read by attachment type. Delayed so the background database
+    // migration (started after the port binds — see main.ts) has finished, and
+    // independent of the token: re-filing reads stored payloads, not Graph.
+    const refile = setTimeout(() => {
+      void this.refileDroppedShares();
+    }, REFILE_DELAY_MS);
+    refile.unref?.();
+    this.schedulerRegistry.addTimeout('instagram-refile-shares', refile);
+
     // Without a token there is nothing to poll with, and a job that fails every
     // tick is just noise in the logs.
     if (!this.config.get<string>('instagramDm.accessToken')) {
@@ -47,6 +60,17 @@ export class InstagramInboxScheduler implements OnModuleInit {
     // Registered so Nest clears it on shutdown.
     this.schedulerRegistry.addInterval('instagram-inbox', handle);
     this.logger.log(`Polling the Instagram inbox every ${seconds}s`);
+  }
+
+  /** The one-off post-boot re-file; a failure is logged, never thrown. */
+  private async refileDroppedShares(): Promise<void> {
+    try {
+      await this.dm.refileDroppedShares();
+    } catch (err) {
+      this.logger.error(
+        `Re-filing earlier Instagram shares failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   /** One poll, skipped if the previous one is still in flight. */
