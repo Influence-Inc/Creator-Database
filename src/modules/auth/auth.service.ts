@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { isDeployed } from '../../common/utils/security';
 import { UserRole } from '@prisma/client';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
@@ -61,9 +62,13 @@ export class AuthService implements OnModuleInit {
     this.secret = randomBytes(32).toString('hex');
   }
 
-  /** True once an admin password is configured (auth is then enforced). */
+  /**
+   * True once an admin password is configured, and always on a deployed
+   * instance: there, an unset ADMIN_PASSWORD locks the env admin out (database
+   * accounts can still sign in) rather than opening the whole API.
+   */
   isEnforced(): boolean {
-    return !!this.config.get<string>('auth.adminPassword');
+    return !!this.config.get<string>('auth.adminPassword') || isDeployed();
   }
 
   private ttlMs(): number {

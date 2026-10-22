@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { UserRole } from '@prisma/client';
 import { Request } from 'express';
 import { parseCookies } from '../utils/cookies';
+import { apiKeyHeader, secretEquals } from '../utils/security';
 import { AuthService, SESSION_COOKIE } from '../../modules/auth/auth.service';
 
 /**
@@ -33,9 +34,7 @@ export class AdminWriteGuard implements CanActivate {
     if (principal?.role === UserRole.ADMIN) return true;
 
     const expectedKey = this.config.get<string>('security.internalApiKey');
-    const provided = req.headers['x-api-key'];
-    const key = Array.isArray(provided) ? provided[0] : provided;
-    if (expectedKey && key && key === expectedKey) return true;
+    if (secretEquals(apiKeyHeader(req.headers), expectedKey)) return true;
 
     throw new UnauthorizedException('Authentication required');
   }

@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { NextFunction, Request, Response } from 'express';
 import { parseCookies } from '../../common/utils/cookies';
 import { AuthService, SESSION_COOKIE } from './auth.service';
+import { isDeployed } from '../../common/utils/security';
 
 /**
  * Sliding-window session refresh. When a request arrives with a valid session
@@ -40,7 +41,7 @@ export class SessionRefreshMiddleware implements NestMiddleware {
     res.cookie(SESSION_COOKIE, fresh, {
       httpOnly: true,
       sameSite: 'lax',
-      secure: this.config.get<string>('server.nodeEnv') === 'production',
+      secure: isDeployed(),
       path: '/',
       maxAge: ttlMs,
     });

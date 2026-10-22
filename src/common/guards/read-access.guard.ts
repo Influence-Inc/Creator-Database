@@ -12,6 +12,7 @@ import { Request } from 'express';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 import { ROLES_KEY } from '../decorators/roles.decorator';
 import { parseCookies } from '../utils/cookies';
+import { apiKeyHeader, secretEquals } from '../utils/security';
 import { AuthService, SESSION_COOKIE } from '../../modules/auth/auth.service';
 
 const READ_METHODS = new Set(['GET', 'HEAD']);
@@ -69,9 +70,7 @@ export class ReadAccessGuard implements CanActivate {
 
     // 2) Machine consumers presenting the shared secret.
     const expectedKey = this.config.get<string>('security.internalApiKey');
-    const provided = req.headers['x-api-key'];
-    const key = Array.isArray(provided) ? provided[0] : provided;
-    if (expectedKey && key && key === expectedKey) return true;
+    if (secretEquals(apiKeyHeader(req.headers), expectedKey)) return true;
 
     throw new UnauthorizedException('Authentication required');
   }
