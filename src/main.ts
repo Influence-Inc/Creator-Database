@@ -31,6 +31,28 @@ async function bootstrap(): Promise<void> {
   // Route all Nest logging through the DI-managed structured logger.
   app.useLogger(app.get(StructuredLogger));
 
+  // Railway terminates TLS one proxy hop in front of us: trust exactly that hop
+  // so req.ip (used by the sign-in attempt limit) is the real client address.
+  app.set('trust proxy', 1);
+  app.disable('x-powered-by');
+
+  // Baseline browser hardening on every response: no framing (clickjacking),
+  // no MIME sniffing, HTTPS only, no full URLs leaked in Referer.
+  app.use(
+    (
+      req: IncomingMessage & { secure?: boolean },
+      res: { setHeader(name: string, value: string): void },
+      next: () => void,
+    ) => {
+      res.setHeader('X-Frame-Options', 'DENY');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+      if (req.secure)
+        res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+      next();
+    },
+  );
+
   // Signed contracts carry a drawn-signature image as a base64 data URL, which
   // can exceed Express's default 100kb JSON body limit — raise it so those
   // writes aren't rejected with 413.

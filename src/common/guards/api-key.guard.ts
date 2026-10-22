@@ -9,6 +9,7 @@ import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
 import { Request } from 'express';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
+import { apiKeyHeader, isDeployed, secretEquals } from '../utils/security';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -41,13 +42,17 @@ export class ApiKeyGuard implements CanActivate {
 
     const expected = this.config.get<string>('security.internalApiKey');
     if (!expected) {
-      this.logger.warn('INTERNAL_API_KEY is not set — write endpoints are UNAUTHENTICATED');
+      if (isDeployed()) {
+        this.logger.error('INTERNAL_API_KEY is not set — write endpoints are LOCKED until it is');
+        throw new UnauthorizedException('Write API is not configured on this server');
+      }
+      this.logger.warn(
+        'INTERNAL_API_KEY is not set — write endpoints are UNAUTHENTICATED (local only)',
+      );
       return true;
     }
 
-    const provided = req.headers['x-api-key'];
-    const key = Array.isArray(provided) ? provided[0] : provided;
-    if (key && key === expected) return true;
+    if (secretEquals(apiKeyHeader(req.headers), expected)) return true;
 
     throw new UnauthorizedException('Invalid or missing x-api-key');
   }

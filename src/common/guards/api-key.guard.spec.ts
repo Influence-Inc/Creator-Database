@@ -39,8 +39,18 @@ describe('ApiKeyGuard', () => {
     expect(guard.canActivate(context('DELETE', { 'x-api-key': 'secret' }))).toBe(true);
   });
 
-  it('leaves writes open (with a warning) when no key is configured', () => {
+  it('leaves writes open (with a warning) when no key is configured locally', () => {
     const guard = guardWithKey('');
     expect(guard.canActivate(context('POST'))).toBe(true);
+  });
+
+  it('locks writes when no key is configured on a deployed instance', () => {
+    process.env.RAILWAY_ENVIRONMENT = 'production';
+    try {
+      const guard = guardWithKey('');
+      expect(() => guard.canActivate(context('POST'))).toThrow(UnauthorizedException);
+    } finally {
+      delete process.env.RAILWAY_ENVIRONMENT;
+    }
   });
 });

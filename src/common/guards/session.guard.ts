@@ -11,6 +11,7 @@ import { UserRole } from '@prisma/client';
 import { Request } from 'express';
 import { ROLES_KEY } from '../decorators/roles.decorator';
 import { parseCookies } from '../utils/cookies';
+import { apiKeyHeader, secretEquals } from '../utils/security';
 import { AuthPrincipal, AuthService, SESSION_COOKIE } from '../../modules/auth/auth.service';
 
 /** Request augmented with the verified principal, set by this guard. */
@@ -58,9 +59,7 @@ export class SessionGuard implements CanActivate {
 
     // Machine consumers with the shared secret act as ADMIN.
     const expectedKey = this.config.get<string>('security.internalApiKey');
-    const provided = req.headers['x-api-key'];
-    const key = Array.isArray(provided) ? provided[0] : provided;
-    if (expectedKey && key && key === expectedKey) {
+    if (secretEquals(apiKeyHeader(req.headers), expectedKey)) {
       req.principal = { username: 'api-key', uid: null, role: UserRole.ADMIN };
       return this.assertRole(UserRole.ADMIN, allowed);
     }
