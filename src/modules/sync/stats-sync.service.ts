@@ -8,13 +8,29 @@ import { CreatorsService } from '../creators/creators.service';
 import { DeadLetterService } from './dead-letter.service';
 import { SyncRunService } from './sync-run.service';
 import { SyncResult, emptyCounters } from './sync-result.interface';
+import { RankedRow, collapseByCreator } from './collapse-by-creator';
+
+interface StatsRow {
+  campaign: StatsCampaign;
+  creator: StatsCreator;
+}
+
+/** Identify a stats row in the dead-letter queue. */
+function statsRef({ campaign, creator }: StatsRow): Prisma.InputJsonValue {
+  return {
+    statsCampaignId: campaign.id ?? null,
+    username: creator.username ?? null,
+    email: creator.email ?? null,
+  } as Prisma.InputJsonValue;
+}
 
 /**
  * Job 4 — import creator performance from the influence-stats (ReelMetrics)
  * service.
  *
- * Flow: fetch every campaign + creator from `GET /api/bot/campaigns` → resolve
- * (or create) the master Creator by identity, folding in the analytics summary
+ * Flow: fetch every campaign + creator from `GET /api/bot/campaigns` → fold
+ * each creator's rows across campaigns (newest campaign wins) → resolve (or
+ * create) the master Creator by identity once, folding in the analytics summary
  * (risk, CPM, average views/likes, engagement) → upsert a per-campaign snapshot
  * row into creator_stats (combined totals, commercials, deliverables, per-post
  * breakdown). A failed creator is dead-lettered and the run continues.
@@ -47,24 +63,51 @@ export class StatsSyncService {
     try {
       const { campaigns = [] } = await this.stats.fetchCampaigns();
 
+      // A creator can appear in several campaigns. Saving the master record once
+      // per campaign flipped averageViews / cpm / engagement between campaigns
+      // every run, logging each flip. Fold first: the newest campaign supplies
+      // the master record's figures; every campaign still gets its own snapshot.
+      const rows: RankedRow<StatsRow>[] = [];
       for (const campaign of campaigns) {
         for (const creator of campaign.creators ?? []) {
           counters.processed += 1;
+          rows.push({
+            input: mapStatsToCreator(creator),
+            rank: typeof campaign.createdAt === 'number' ? campaign.createdAt : 0,
+            tiebreak: String(campaign.id ?? ''),
+            item: { campaign, creator },
+          });
+        }
+      }
+
+      for (const group of collapseByCreator(rows)) {
+        let creatorId: string;
+        let created = false;
+        try {
+          const result = await this.creators.upsertFromSource(
+            group.input,
+            ActivitySource.STATS_SYNC,
+          );
+          if (!result.creator) continue; // no identity → nothing to attach stats to
+          creatorId = result.creator.id;
+          created = result.created;
+        } catch (err) {
+          counters.failed += group.rows.length;
+          await this.deadLetter.record(JobType.STATS_SYNC, statsRef(group.rows[0].item), err);
+          continue;
+        }
+
+        // Counted per row, as before: the first row of a new creator is the
+        // "created" one, everything else an update.
+        for (const [i, { item }] of group.rows.entries()) {
           try {
-            const changed = await this.syncCreator(campaign, creator);
-            if (changed === 'created') counters.created += 1;
-            else if (changed === 'updated') counters.updated += 1;
+            const snapshot = mapStatsToSnapshot(item.creator, item.campaign);
+            if (snapshot) await this.creatorStats.upsertFromStats(creatorId, snapshot);
+            if (i === 0 && created) counters.created += 1;
+            else counters.updated += 1;
           } catch (err) {
             counters.failed += 1;
-            await this.deadLetter.record(
-              JobType.STATS_SYNC,
-              {
-                statsCampaignId: campaign.id,
-                username: creator.username,
-                email: creator.email,
-              } as Prisma.InputJsonValue,
-              err,
-            );
+            await this.deadLetter.record(JobType.STATS_SYNC, statsRef(item), err);
           }
         }
       }
@@ -78,25 +121,5 @@ export class StatsSyncService {
       this.logger.error('Stats sync failed', { runId: run.id, error: message });
       return result;
     }
-  }
-
-  /**
-   * Resolve/merge the master creator and upsert its per-campaign snapshot.
-   * Returns 'created' | 'updated' | 'skipped' to drive the run counters.
-   */
-  private async syncCreator(
-    campaign: StatsCampaign,
-    creator: StatsCreator,
-  ): Promise<'created' | 'updated' | 'skipped'> {
-    const creatorInput = mapStatsToCreator(creator);
-    const result = await this.creators.upsertFromSource(creatorInput, ActivitySource.STATS_SYNC);
-    if (!result.creator) return 'skipped'; // no identity → nothing to attach stats to
-
-    const snapshot = mapStatsToSnapshot(creator, campaign);
-    if (snapshot) {
-      await this.creatorStats.upsertFromStats(result.creator.id, snapshot);
-    }
-
-    return result.created ? 'created' : 'updated';
   }
 }

@@ -8,13 +8,26 @@ import { CreatorsService } from '../creators/creators.service';
 import { DeadLetterService } from './dead-letter.service';
 import { SyncRunService } from './sync-run.service';
 import { SyncResult, emptyCounters } from './sync-result.interface';
+import { InstantlyLead } from '../../integrations/instantly/instantly.types';
+import { RankedRow, collapseByCreator } from './collapse-by-creator';
+
+/** Identify a lead in the dead-letter queue without storing the whole lead. */
+function leadRef(lead: InstantlyLead): Prisma.InputJsonValue {
+  return {
+    leadId: lead.id ?? null,
+    email: lead.email ?? null,
+    campaignId: lead.campaign_id ?? lead.campaign ?? null,
+  } as Prisma.InputJsonValue;
+}
 
 /**
  * Job 1 — import creator data from the Instantly outreach dashboard.
  *
  * Flow: upsert campaigns → walk each campaign's leads → map each lead to a
- * creator upsert input → merge into the master record (deduped, changed-fields
- * only). A failed lead is dead-lettered and the run continues.
+ * creator upsert input → fold a creator's leads from every campaign into one
+ * input (most recently contacted campaign wins) → merge into the master record
+ * once (deduped, changed-fields only). A failed lead is dead-lettered and the
+ * run continues.
  */
 @Injectable()
 export class OutreachSyncService {
@@ -38,6 +51,11 @@ export class OutreachSyncService {
       const campaignMap = await this.syncCampaigns();
       const scanIds = this.resolveScanIds(campaignMap);
 
+      // Collect every lead first, then save once per creator. A creator who is a
+      // lead in several campaigns used to be upserted once per campaign, so the
+      // master record flipped between campaigns every run and each flip was
+      // written to activity_logs (see collapseByCreator).
+      const rows: RankedRow<InstantlyLead>[] = [];
       for (const instantlyId of scanIds) {
         const ctx = instantlyId ? campaignMap.get(instantlyId) : undefined;
         for await (const lead of this.instantly.iterateLeads(instantlyId)) {
@@ -47,24 +65,31 @@ export class OutreachSyncService {
               campaignId: ctx?.localId,
               campaignName: ctx?.name,
             });
-            const result = await this.creators.upsertFromSource(
+            rows.push({
               input,
-              ActivitySource.INSTANTLY_DASHBOARD,
-            );
-            if (result.created) counters.created += 1;
-            else if (result.changed) counters.updated += 1;
+              // The campaign the creator was most recently contacted in wins.
+              rank: input.latestEmailDate?.getTime() ?? 0,
+              tiebreak: ctx?.name ?? instantlyId ?? '',
+              item: lead,
+            });
           } catch (err) {
             counters.failed += 1;
-            await this.deadLetter.record(
-              JobType.OUTREACH_SYNC,
-              {
-                leadId: lead.id ?? null,
-                email: lead.email ?? null,
-                campaignId: lead.campaign_id ?? lead.campaign ?? null,
-              } as Prisma.InputJsonValue,
-              err,
-            );
+            await this.deadLetter.record(JobType.OUTREACH_SYNC, leadRef(lead), err);
           }
+        }
+      }
+
+      for (const group of collapseByCreator(rows)) {
+        try {
+          const result = await this.creators.upsertFromSource(
+            group.input,
+            ActivitySource.INSTANTLY_DASHBOARD,
+          );
+          if (result.created) counters.created += 1;
+          else if (result.changed) counters.updated += 1;
+        } catch (err) {
+          counters.failed += 1;
+          await this.deadLetter.record(JobType.OUTREACH_SYNC, leadRef(group.rows[0].item), err);
         }
       }
 

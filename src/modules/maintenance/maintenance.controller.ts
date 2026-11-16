@@ -33,8 +33,9 @@ export class MaintenanceController {
 
   /**
    * Prune the operational log tables (failed_jobs, sync_runs, webhook
-   * deliveries) now instead of waiting for the 6-hourly run. Defaults to a dry
-   * run; pass dryRun=false to delete. Business data is never touched.
+   * deliveries) and collapse pre-fix sync churn in activity_logs now, instead
+   * of waiting for the next boot / 6-hourly run. Defaults to a dry run; pass
+   * dryRun=false to delete. Business data is never touched.
    */
   @Post('prune-logs')
   @HttpCode(HttpStatus.OK)
