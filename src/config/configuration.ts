@@ -62,6 +62,8 @@ export interface AppConfig {
     cronStatsSync: string;
     instagramPollSeconds: number;
     upcomingDeadlineDays: number;
+    retentionFailedJobDays: number;
+    retentionLogDays: number;
   };
 }
 
@@ -171,5 +173,8 @@ export default (): AppConfig => ({
     // Floored at 10s so a typo can't hammer Meta's rate limit.
     instagramPollSeconds: Math.max(10, parseIntOr(process.env.INSTAGRAM_POLL_SECONDS, 35)),
     upcomingDeadlineDays: parseIntOr(process.env.UPCOMING_DEADLINE_DAYS, 30),
+    // Retention for the operational log tables (see RetentionService).
+    retentionFailedJobDays: parseIntOr(process.env.RETENTION_FAILED_JOB_DAYS, 14),
+    retentionLogDays: parseIntOr(process.env.RETENTION_LOG_DAYS, 30),
   },
 });

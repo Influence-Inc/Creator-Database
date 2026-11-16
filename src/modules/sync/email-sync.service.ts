@@ -46,7 +46,19 @@ export class EmailSyncService {
           else if (result.changed) counters.updated += 1;
         } catch (err) {
           counters.failed += 1;
-          await this.deadLetter.record(JobType.EMAIL_SYNC, { email } as Prisma.InputJsonValue, err);
+          // Identify the message, don't copy it: the raw email (HTML body and
+          // all) is re-fetched every run, so storing it here is what filled
+          // the database volume.
+          await this.deadLetter.record(
+            JobType.EMAIL_SYNC,
+            {
+              id: email.id ?? null,
+              messageId: email.message_id ?? null,
+              threadId: email.thread_id ?? null,
+              subject: typeof email.subject === 'string' ? email.subject.slice(0, 200) : null,
+            } as Prisma.InputJsonValue,
+            err,
+          );
         }
       }
 

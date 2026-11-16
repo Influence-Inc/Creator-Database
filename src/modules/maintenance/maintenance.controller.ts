@@ -3,6 +3,7 @@ import { CreatorMergeService } from '../creators/creator-merge.service';
 import { MergeCreatorsDto } from './dto/merge-creators.dto';
 import { DuplicateCreatorsService } from './duplicate-creators.service';
 import { MaintenanceService } from './maintenance.service';
+import { RetentionService } from './retention.service';
 
 /**
  * Guarded maintenance actions (mutations → require x-api-key via ApiKeyGuard).
@@ -12,6 +13,8 @@ import { MaintenanceService } from './maintenance.service';
  *   GET  /maintenance/duplicate-creators       list split records + the evidence
  *   POST /maintenance/merge-duplicates?dryRun=true  fold every matched pair
  *   POST /maintenance/merge-creators           merge one specific pair by id
+ *   GET  /maintenance/db-size                  database + per-table disk usage
+ *   POST /maintenance/prune-logs?dryRun=true   preview / run log-table retention
  */
 @Controller('maintenance')
 export class MaintenanceController {
@@ -19,7 +22,25 @@ export class MaintenanceController {
     private readonly maintenance: MaintenanceService,
     private readonly duplicates: DuplicateCreatorsService,
     private readonly merger: CreatorMergeService,
+    private readonly retention: RetentionService,
   ) {}
+
+  /** Read-only: how big the database is and which tables are taking the space. */
+  @Get('db-size')
+  dbSize() {
+    return this.retention.tableSizes();
+  }
+
+  /**
+   * Prune the operational log tables (failed_jobs, sync_runs, webhook
+   * deliveries) now instead of waiting for the 6-hourly run. Defaults to a dry
+   * run; pass dryRun=false to delete. Business data is never touched.
+   */
+  @Post('prune-logs')
+  @HttpCode(HttpStatus.OK)
+  pruneLogs(@Query('dryRun') dryRun?: string) {
+    return this.retention.prune(!(dryRun === 'false' || dryRun === '0'));
+  }
 
   @Post('purge-demo')
   @HttpCode(HttpStatus.OK)

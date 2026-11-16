@@ -57,7 +57,11 @@ export class OutreachSyncService {
             counters.failed += 1;
             await this.deadLetter.record(
               JobType.OUTREACH_SYNC,
-              { lead } as Prisma.InputJsonValue,
+              {
+                leadId: lead.id ?? null,
+                email: lead.email ?? null,
+                campaignId: lead.campaign_id ?? lead.campaign ?? null,
+              } as Prisma.InputJsonValue,
               err,
             );
           }
